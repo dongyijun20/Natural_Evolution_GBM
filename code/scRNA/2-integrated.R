@@ -8,16 +8,18 @@ TT01_1<-readRDS("result/TT01_1.rds")
 TT01_2<-readRDS("result/TT01_2.rds")
 TT02_1<-readRDS("result/TT02_1.rds")
 TT02_2<-readRDS("result/TT02_2.rds")
+XH01_1<-readRDS("result/bingzao1.rds")
+XH01_2<-readRDS("result/bingzao2.rds")
 
 library(RColorBrewer)
-names<-c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2")
-SampleColor <- brewer.pal(8, 'Paired')[c(2,1,4,3,6,5,8,7)]
+names<-c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
+SampleColor <- brewer.pal(10, 'Paired')[c(2,1,4,3,6,5,8,7,10,9)]
 names(SampleColor)<-names
 
 GradeColor <- brewer.pal(10, 'Paired')[9:10]
 names(GradeColor) <- c("younger","older")
 
-merge <- merge(x=NJ01_1,y=c(NJ01_2,NJ02_1,NJ02_2,TT01_1,TT01_2,TT02_1,TT02_2))
+merge <- merge(x=NJ01_1,y=c(NJ01_2,NJ02_1,NJ02_2,TT01_1,TT01_2,TT02_1,TT02_2,XH01_1,XH01_2))
 merge
 merge <- NormalizeData(merge)
 merge <- FindVariableFeatures(merge)
@@ -36,12 +38,14 @@ merge$sample[merge$sample==5] <- "TT01_1"
 merge$sample[merge$sample==6] <- "TT01_2"
 merge$sample[merge$sample==7] <- "TT02_1"
 merge$sample[merge$sample==8] <- "TT02_2"
-saveRDS(merge,file = "result/merged_new.rds")
+merge$sample[merge$sample==9] <- "XH01_1"
+merge$sample[merge$sample==10] <- "XH01_2"
+saveRDS(merge,file = "result/merged_withXHsample.rds")
 
 merge$grade <- "older"
 merge$grade[sub(".*\\_(.*)","\\1",merge$sample)==2] <- "younger"
 
-pdf("plot_new/merged_new.pdf")
+pdf("plot_new/merged_withXHsample.pdf")
 DimPlot(merge, label = T)
 DimPlot(merge, group.by = "sample", cols = SampleColor)
 DimPlot(merge, group.by = "grade", cols = GradeColor)

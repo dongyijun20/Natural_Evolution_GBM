@@ -3,7 +3,7 @@ library(ggplot2)
 library(patchwork)
 library(dplyr)
 library(infercnv)
-pbmc <- readRDS("result/merged_new.rds")
+pbmc <- readRDS("result/merged_withXHsample.rds")
 pbmc <- FindClusters(pbmc, resolution = 2)
 
 table(pbmc$celltype_bped_main)
@@ -15,11 +15,14 @@ immune_hpca<-colnames(pbmc)[pbmc$celltype_hpca_main%in%c("B_cell","T_cells","DC"
 immune_mid<-colnames(pbmc)[pbmc$celltype_mid_main%in%c("B cells","CD4+ T cells","CD8+ T cells","Dendritic cells","T cells","Monocytes","NK cells")]
 immune <- names(table(pbmc$seurat_clusters))[table(pbmc$seurat_clusters[intersect(intersect(immune_bped,immune_hpca),
                                                                        immune_mid)])/table(pbmc$seurat_clusters)>0.9]
-table(pbmc$seurat_clusters)
+# table(pbmc$seurat_clusters)
+# 
+# subset <- pbmc[,sample(colnames(pbmc),10000)]
+# saveRDS(subset, file = "result/merged_withXHsample_subset.rds")
 
-subset <- pbmc[,sample(colnames(pbmc),10000)]
-saveRDS(subset, file = "result/merged_new_subset.rds")
-counts_matrix <- GetAssayData(object = subset, slot = 'counts')
+subset <- readRDS("result/merged_withXHsample_subset.rds")
+subset <- JoinLayers(subset)
+counts_matrix <- LayerData(object = subset, layer = "counts")
 annot <- as.data.frame(subset$seurat_clusters)
 
 # Load gene order file
@@ -33,15 +36,15 @@ infercnv_obj <- CreateInfercnvObject(raw_counts_matrix = counts_matrix,
 # Run inferCNV
 infercnv_obj <- infercnv::run(infercnv_obj, 
                               cutoff = 0.1,
-                              out_dir = paste0('infercnv/merged_new_subset'), 
+                              out_dir = paste0('infercnv/merged_withXHsample_subset'), 
                               cluster_by_groups = T,
-                              resume_mode = F,
+                              resume_mode = T,
                               denoise = T, 
                               HMM = T, 
                               output_format = 'pdf',
-                              num_threads = 1)
+                              num_threads = 10)
 
-infercnv_obj<-readRDS("infercnv/merged_new_subset/run.final.infercnv_obj")
+infercnv_obj<-readRDS("infercnv/merged_withXHsample_subset/run.final.infercnv_obj")
 infercnv::plot_cnv(infercnv_obj, #上两步得到的infercnv对象
                    plot_chr_scale = T, #画染色体全长，默认只画出（分析用到的）基因
                    output_filename = paste0('infercnv/merged_new_subset/infercnv_re.pdf'),
@@ -49,7 +52,7 @@ infercnv::plot_cnv(infercnv_obj, #上两步得到的infercnv对象
 
 # Identify malignant cells
 subset <- pbmc[,colnames(infercnv_obj@expr.data)]
-seu <- add_to_seurat(subset, 'infercnv/merged_new_subset')
+seu <- add_to_seurat(subset, infercnv_output_path = 'infercnv/merged_withXHsample_subset/')
 cnv_cols <- grep('proportion_scaled_cnv_chr', names(seu@meta.data), value = T)
 cnvs <- seu@meta.data[, cnv_cols]
 seu$cnv_avg <- rowMeans(cnvs)
@@ -57,7 +60,7 @@ table(seu$cnv_avg,seu$seurat_clusters)
 
 # For the majority of samples cut-off > 0.1 (exceptions below)
 sapply(sort(unique(seu$seurat_clusters)), function(x) summary(seu$cnv_avg[seu$seurat_clusters==x]))
-seu$malignant <- ifelse(seu$cnv_avg > 0.08, 'malignant', 'non-malignant')
+seu$malignant <- ifelse(seu$cnv_avg > 0.1, 'malignant', 'non-malignant')
 table(seu$malignant,seu$seurat_clusters)
 
 # Add CNV metrics
@@ -75,22 +78,21 @@ seu$has_cnv_avg <- rowMeans(cnvs)
 
 table(seu$malignant)
 table(seu$malignant,seu$seurat_clusters)
-malignant_cluster <- c(0:length(unique(seu$seurat_clusters)))[table(seu$malignant,seu$seurat_clusters)[1,]>0]
+malignant_cluster <- colnames(table(seu$malignant,seu$seurat_clusters))[table(seu$malignant,seu$seurat_clusters)[1,]>table(seu$malignant,seu$seurat_clusters)[2,]]
 malignant_cluster
 
 pbmc$tumor_ident <- "non-malignant"
 pbmc$tumor_ident[pbmc$seurat_clusters%in%malignant_cluster]<-"malignant"
 table(pbmc$tumor_ident)
 
-saveRDS(pbmc, file = "result/merged_new.rds")
+saveRDS(pbmc, file = "result/merged_withXHsample.rds")
 
-pdf("plot_new/infercnv.pdf")
+pdf("plot_new/infercnv_withXHsample.pdf")
 DimPlot(pbmc, group.by = "tumor_ident",cols = c("malignant"="red","non-malignant"="blue"))+
   ggtitle("Malignant Cells Identification",subtitle = paste("Fraction = ", 100*round(sum(pbmc$tumor_ident=="malignant")/ncol(pbmc),2),"%",sep = ""))
 dev.off()
 
-
-dat <- read.table("infercnv/merged_new_subset/expr.infercnv.dat")
+dat <- read.table("infercnv/merged_withXHsample_subset/expr.infercnv.dat")
 cell.group <- read
 ht = Heatmap(dat,show_row_names=F,show_column_names=F,cluster_columns=F,
              row_dend_width = unit(0.1,"npc"),
@@ -175,7 +177,7 @@ nonmalignant <- RunPCA(nonmalignant, features = VariableFeatures(object = nonmal
 nonmalignant <- FindNeighbors(nonmalignant, dims = 1:40)
 nonmalignant <- FindClusters(nonmalignant, resolution = 1)
 nonmalignant <- RunUMAP(nonmalignant, dims = 1:40)
-saveRDS(nonmalignant,file = "result/nonmalignant_new.rds")
+saveRDS(nonmalignant,file = "result/nonmalignant_withXHsample.rds")
 
 malignant <- subset(pbmc, tumor_ident=="malignant")
 malignant <- FindVariableFeatures(malignant, selection.method = "vst", nfeatures = 2000)
@@ -184,46 +186,46 @@ malignant <- RunPCA(malignant, features = VariableFeatures(object = malignant))
 malignant <- FindNeighbors(malignant, dims = 1:40)
 malignant <- FindClusters(malignant, resolution = 1)
 malignant <- RunUMAP(malignant, dims = 1:40)
-saveRDS(malignant,file = "result/malignant_new.rds")
+saveRDS(malignant,file = "result/malignant_withXHsample.rds")
 
-pdf("plot_new/divided.pdf")
+pdf("plot_new/divided_withXHsample.pdf")
 DimPlot(nonmalignant, label=T)
 DimPlot(malignant, label=T)
 DimPlot(malignant, group.by = "sample", cols = SampleColor)
 DimPlot(malignant, group.by = "grade", cols = GradeColor)
 dev.off()
 
-library(Seurat)
-
-malignant <- readRDS("result/malignant_new.rds")
-younger <- subset(malignant, grade=="younger")
-older <- subset(malignant, grade=="older")
-
-younger <- NormalizeData(younger)
-younger <- FindVariableFeatures(younger)
-younger <- ScaleData(younger)
-younger <- RunPCA(younger, npcs = 50)
-younger <- RunUMAP(younger, dims = 1:40)
-younger <- FindNeighbors(younger, dims = 1:40)
-younger <- FindClusters(younger, resolution = 0.5)
-
-pdf("plot_new/younger_malignant.pdf")
-DimPlot(younger, label = T)
-DimPlot(younger, group.by = "sample", cols = SampleColor)
-dev.off()
-
-older <- NormalizeData(older)
-older <- FindVariableFeatures(older)
-older <- ScaleData(older)
-older <- RunPCA(older, npcs = 50)
-older <- RunUMAP(older, dims = 1:40)
-older <- FindNeighbors(older, dims = 1:40)
-older <- FindClusters(older, resolution = 0.5)
-
-pdf("plot_new/older_malignant.pdf")
-DimPlot(older, label = T)
-DimPlot(older, group.by = "sample", cols = SampleColor)
-dev.off()
-
-saveRDS(younger, file = "result/younger_malignant.rds")
-saveRDS(older, file = "result/older_malignant.rds")
+# library(Seurat)
+# 
+# malignant <- readRDS("result/malignant_withXHsample.rds")
+# younger <- subset(malignant, grade=="younger")
+# older <- subset(malignant, grade=="older")
+# 
+# younger <- NormalizeData(younger)
+# younger <- FindVariableFeatures(younger)
+# younger <- ScaleData(younger)
+# younger <- RunPCA(younger, npcs = 50)
+# younger <- RunUMAP(younger, dims = 1:40)
+# younger <- FindNeighbors(younger, dims = 1:40)
+# younger <- FindClusters(younger, resolution = 0.5)
+# 
+# pdf("plot_new/younger_malignant_withXHsample.pdf")
+# DimPlot(younger, label = T)
+# DimPlot(younger, group.by = "sample", cols = SampleColor)
+# dev.off()
+# 
+# older <- NormalizeData(older)
+# older <- FindVariableFeatures(older)
+# older <- ScaleData(older)
+# older <- RunPCA(older, npcs = 50)
+# older <- RunUMAP(older, dims = 1:40)
+# older <- FindNeighbors(older, dims = 1:40)
+# older <- FindClusters(older, resolution = 0.5)
+# 
+# pdf("plot_new/older_malignant_withXHsample.pdf")
+# DimPlot(older, label = T)
+# DimPlot(older, group.by = "sample", cols = SampleColor)
+# dev.off()
+# 
+# saveRDS(younger, file = "result/younger_malignant_withXHsample.rds")
+# saveRDS(older, file = "result/older_malignant_withXHsample.rds")

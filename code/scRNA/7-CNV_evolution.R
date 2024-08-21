@@ -4,9 +4,9 @@ library(patchwork)
 library(dplyr)
 library(infercnv)
 
-younger <- readRDS("result/younger_malignant.rds")
-immune <- readRDS("result/nonmalignant_subset.rds")
-subset <- merge(younger, immune)
+setwd("~/neurosurgery/NES")
+pbmc <- readRDS("result/merged_withXHsample.rds")
+subset <- subset(pbmc, sample == "XH01_2")
 
 counts_matrix <- GetAssayData(object = subset, slot = 'counts')
 annot <- as.data.frame(subset$tumor_ident)
@@ -21,14 +21,15 @@ infercnv_obj <- CreateInfercnvObject(raw_counts_matrix = counts_matrix,
 
 infercnv_obj <- infercnv::run(infercnv_obj, 
                               cutoff = 1,
-                              out_dir = paste0('infercnv/younger_malignant'), 
-                              cluster_by_groups=T, 
+                              out_dir = paste0('infercnv/XH01_2_malignant'), 
+                              cluster_by_groups = F, 
 			                        resume = T,
-                              analysis_mode="subclusters",
+                              analysis_mode="subclusters", 
+			                        tumor_subcluster_partition_method = "random_trees",
                               denoise = T, 
                               HMM = T, 
                               output_format = NA,
-                              num_threads = 4)
+                              num_threads = 10)
 
 # infercnv_obj <- readRDS("infercnv/older_malignant/run.final.infercnv_obj")
 # infercnv::plot_cnv(infercnv_obj, #上两步得到的infercnv对象
