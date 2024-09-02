@@ -8,6 +8,7 @@ library(tidyverse)
 library(Seurat)
 library(RColorBrewer)
 library(corrplot)
+library(xlsx)
 
 markers<-as.list(read.xlsx("mmc2.xlsx",sheetIndex = 1,startRow = 4))
 markers<-lapply(markers,function(x) na.omit(x))
@@ -18,18 +19,19 @@ markers<-list(MES = c(markers$MES1,markers$MES2),
               AC = markers$AC)
 gene_sets <- markers
 
-pbmc <- readRDS("result/merged_new.rds")
-pbmc <- FindClusters(pbmc, resolution = 1)
-DimPlot(pbmc, label=T)
-pbmc$tumor_ident_fine <- "malignant"
-pbmc$tumor_ident_fine[pbmc$seurat_clusters%in%c(34,20,8,27,22,36,26,31,13,19,12,16,3)] <- "non-malignant"
-saveRDS(pbmc, file = "result/merged_new.rds")
+# pbmc <- readRDS("result/merged_new.rds")
+# pbmc <- FindClusters(pbmc, resolution = 1)
+# DimPlot(pbmc, label=T)
+# pbmc$tumor_ident_fine <- "malignant"
+# pbmc$tumor_ident_fine[pbmc$seurat_clusters%in%c(34,20,8,27,22,36,26,31,13,19,12,16,3)] <- "non-malignant"
+# saveRDS(pbmc, file = "result/merged_new.rds")
+# 
+# pdf("plot_new/tumor_ident_fine.pdf")
+# DimPlot(pbmc, group.by = "tumor_ident_fine",cols = c("malignant"="red","non-malignant"="blue"))+
+#   ggtitle("Malignant Cells Identification",subtitle = paste("Fraction = ", 100*round(sum(pbmc$tumor_ident_fine=="malignant")/ncol(pbmc),2),"%",sep = ""))
+# dev.off()
 
-pdf("plot_new/tumor_ident_fine.pdf")
-DimPlot(pbmc, group.by = "tumor_ident_fine",cols = c("malignant"="red","non-malignant"="blue"))+
-  ggtitle("Malignant Cells Identification",subtitle = paste("Fraction = ", 100*round(sum(pbmc$tumor_ident_fine=="malignant")/ncol(pbmc),2),"%",sep = ""))
-dev.off()
-
+malignant <- readRDS("result/malignant_withXHsample.rds")
 
 library(AUCell)
 library(clusterProfiler)
@@ -45,14 +47,14 @@ malignant$AUC_NPC  <- as.numeric(getAUC(cells_AUC)["NPC", ])
 malignant$AUC_OPC  <- as.numeric(getAUC(cells_AUC)["OPC", ])
 malignant$AUC_NES  <- as.numeric(getAUC(cells_AUC)["NES", ])
 
-pdf("plot_new/MES_NES_FeaturePlot.pdf", width = 20, height = 5)
+pdf("plot_new/MES_NES_FeaturePlot_withXHsample.pdf", width = 20, height = 5)
 FeaturePlot(malignant, features = c("AUC_NES", "AUC_MES"), max.cutoff = "q90", min.cutoff = "q10", blend = T)
 dev.off()
 
 df<-data.frame(MES = malignant$AUC_MES, sample = malignant$sample)
 df %>% group_by(sample) %>% summarise_at(vars (MES), list (name = mean))
 comparelist <- list(c("NJ01_1","NJ01_2"),c("NJ02_1","NJ02_2"),c("TT01_1","TT01_2"),c("TT02_1","TT02_2")) 
-pdf("plot_new/MES_NES_AUC.pdf")
+pdf("plot_new/MES_NES_AUC_withXHsample.pdf")
 ggboxplot(df, x = "sample", y = "MES",
           color = "sample", palette = SampleColor)+ ylab("MES score")+
   stat_compare_means(comparisons = comparelist, label = "p.signif")+NoLegend()
@@ -66,31 +68,31 @@ dev.off()
 library(GSEABase)
 library(GSVA)
 
-malignant <- readRDS("result/malignant_new.rds")
 DimPlot(malignant)
 table(malignant$seurat_clusters)
-Idents(malignant)<-"seurat_clusters"
-
-GSVA_hall <- gsva(expr=as.matrix(malignant@assays$RNA@data), 
+exp=AverageExpression(malignant,assays = "RNA", group.by = "seurat_clusters")
+counts2=exp[["RNA"]]
+GSVA_hall <- gsva(expr=counts2, 
                   gset.idx.list=gene_sets, 
                   mx.diff=T, # 数据为正态分布则T，双峰则F
                   kcdf="Gaussian", #CPM, RPKM, TPM数据就用默认值"Gaussian"， read count数据则为"Poisson"，
                   parallel.sz=4) # 并行线程数目
 head(GSVA_hall)
-
 pheatmap::pheatmap(GSVA_hall, #热图的数据
                    cluster_rows = T,#行聚类
                    cluster_cols =T,#列聚类，可以看出样本之间的区分度
-                   show_colnames=F,
-                   scale = "column") #以行来标准化，这个功能很不错
+                   show_colnames=T,
+                   scale = "none") #以行来标准化，这个功能很不错
 
 subtype <- apply(GSVA_hall,2,function(x) rownames(GSVA_hall)[which.max(x)])
-malignant$subtype <- subtype
-malignant
+names(subtype) <- gsub("g", "", names(subtype))
+malignant$subtype <- as.vector(sapply(malignant$seurat_clusters,function(x) subtype[x]))
 
+library(ArchR)
 subtype_color<-ArchRPalettes$stallion[1:length(unique(malignant$subtype))]
 names(subtype_color) <- sort(unique(malignant$subtype))
-pdf("plot_new/malignant_subtype.pdf")
+
+pdf("plot_new/malignant_subtype_withXHsample.pdf")
 DimPlot(malignant, group.by = "subtype", cols = subtype_color)
 pheatmap::pheatmap(GSVA_hall, #热图的数据
                    cluster_rows = T,#行聚类
@@ -121,9 +123,9 @@ P2=ggplot(CellInfo, aes(subtype , fill=subtype))+geom_bar(stat="count",colour = 
   theme(legend.position = "none")
 P2g=ggplotGrob(P2)
 
-pdf("plot_new/proportion_subtype.pdf",width=7,height=6)
+pdf("plot_new/proportion_subtype_withXHsample.pdf",width=7,height=6)
 grid.arrange(grobs=list(P1g,P2g), widths = c(1,0.35),heights=c(0.19,1),layout_matrix = rbind(c(1, NA),c(1,2))) 
 dev.off()
 
-saveRDS(malignant, file = "result/malignant_new.rds")
+saveRDS(malignant, file = "result/malignant_withXHsample.rds")
 

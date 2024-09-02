@@ -195,37 +195,37 @@ DimPlot(malignant, group.by = "sample", cols = SampleColor)
 DimPlot(malignant, group.by = "grade", cols = GradeColor)
 dev.off()
 
-# library(Seurat)
-# 
-# malignant <- readRDS("result/malignant_withXHsample.rds")
-# younger <- subset(malignant, grade=="younger")
-# older <- subset(malignant, grade=="older")
-# 
-# younger <- NormalizeData(younger)
-# younger <- FindVariableFeatures(younger)
-# younger <- ScaleData(younger)
-# younger <- RunPCA(younger, npcs = 50)
-# younger <- RunUMAP(younger, dims = 1:40)
-# younger <- FindNeighbors(younger, dims = 1:40)
-# younger <- FindClusters(younger, resolution = 0.5)
-# 
-# pdf("plot_new/younger_malignant_withXHsample.pdf")
-# DimPlot(younger, label = T)
-# DimPlot(younger, group.by = "sample", cols = SampleColor)
-# dev.off()
-# 
-# older <- NormalizeData(older)
-# older <- FindVariableFeatures(older)
-# older <- ScaleData(older)
-# older <- RunPCA(older, npcs = 50)
-# older <- RunUMAP(older, dims = 1:40)
-# older <- FindNeighbors(older, dims = 1:40)
-# older <- FindClusters(older, resolution = 0.5)
-# 
-# pdf("plot_new/older_malignant_withXHsample.pdf")
-# DimPlot(older, label = T)
-# DimPlot(older, group.by = "sample", cols = SampleColor)
-# dev.off()
-# 
-# saveRDS(younger, file = "result/younger_malignant_withXHsample.rds")
-# saveRDS(older, file = "result/older_malignant_withXHsample.rds")
+## after determine which is older and which is younger--------
+
+malignant <- readRDS("result/malignant_withXHsample.rds")
+younger <- subset(malignant, grade=="younger")
+older <- subset(malignant, grade=="older")
+
+younger <- NormalizeData(younger)
+younger <- FindVariableFeatures(younger)
+younger <- ScaleData(younger)
+younger <- RunPCA(younger, npcs = 50)
+younger <- RunUMAP(younger, dims = 1:40)
+younger <- FindNeighbors(younger, dims = 1:40)
+younger <- FindClusters(younger, resolution = 0.5)
+
+pdf("plot_new/younger_malignant_withXHsample.pdf")
+DimPlot(younger, label = T)
+DimPlot(younger, group.by = "sample", cols = SampleColor)
+dev.off()
+
+older <- NormalizeData(older)
+older <- FindVariableFeatures(older)
+older <- ScaleData(older)
+older <- RunPCA(older, npcs = 50)
+older <- RunUMAP(older, dims = 1:40)
+older <- FindNeighbors(older, dims = 1:40)
+older <- FindClusters(older, resolution = 0.5)
+
+pdf("plot_new/older_malignant_withXHsample.pdf")
+DimPlot(older, label = T)
+DimPlot(older, group.by = "sample", cols = SampleColor)
+dev.off()
+
+saveRDS(younger, file = "result/younger_malignant_withXHsample.rds")
+saveRDS(older, file = "result/older_malignant_withXHsample.rds")

@@ -45,6 +45,8 @@ nonmalignant <- readRDS("result/nonmalignant_new.rds")
 nonmalignant_subset <- nonmalignant[,sample(colnames(nonmalignant),2000)]
 saveRDS(nonmalignant_subset, file="result/nonmalignant_subset.rds")
 
+nonmalignant[["RNA"]] <- JoinLayers(nonmalignant[["RNA"]])
+Layers(nonmalignant[["RNA"]])
 
 ## run harmony----------
 nonmalignant$batch <- nonmalignant$sample
@@ -67,8 +69,8 @@ nonmalignant <- nonmalignant %>%
 DimPlot(nonmalignant)
 
 library(RColorBrewer)
-names<-c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2")
-SampleColor <- brewer.pal(8, 'Paired')[c(2,1,4,3,6,5,8,7)]
+names<-c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
+SampleColor <- brewer.pal(8, 'Paired')[c(2,1,4,3,6,5,8,7,10,9)]
 names(SampleColor)<-names
 
 
@@ -126,21 +128,23 @@ dev.off()
 ### FindMarkers
 markers <- FindAllMarkers(nonmalignant, only.pos = TRUE, test.use = "wilcox")
 markers_df = markers %>% group_by(cluster) %>% top_n(n = 500, wt = avg_log2FC)
-write.table(markers_df,file="result/nonmalignant_markers500.txt",quote=F,sep="\t",row.names=F,col.names=T)
+write.table(markers_df,file="result/nonmalignant_markers500_withXHsample.txt",quote=F,sep="\t",row.names=F,col.names=T)
 
-markers_df <- read.table("result/nonmalignant_markers500.txt", header = T)
+markers_df <- read.table("result/nonmalignant_markers500_withXHsample.txt", header = T)
 #write.csv(file="test.csv",rbind(markers_df$cluster[markers_df$cluster==1],markers_df$gene[markers_df$cluster==1]),quote = F,col.names = F,row.names = F)
-markers_df = markers_df %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+markers_df = markers_df %>% 
+  dplyr::filter(!grepl("^RP", gene)) %>% 
+  group_by(cluster) %>% top_n(n = 5, wt = avg_log2FC)
 markers_df$gene[markers_df$cluster==5]
 
 ### heatmap------------
 # Single cell heatmap of feature expression
 Idents(nonmalignant) <- "seurat_clusters"
-pdf("plot_new/nonmalignant_heatmap.pdf")
+pdf("plot_new/nonmalignant_heatmap_withXHsample.pdf")
 DoHeatmap(subset(nonmalignant, downsample = 500), features = markers_df$gene, size = 3)+ 
   scale_fill_viridis() + theme(text = element_text(size = 8)) + NoLegend()
 dev.off()
-pdf("plot_new/nonmalignant_dotplot.pdf",width = 6,height = 10)
+pdf("plot_new/nonmalignant_dotplot_withXHsample.pdf",width = 6,height = 10)
 DotPlot(nonmalignant, features = unique(markers_df$gene)) + 
   coord_flip() + #翻转
   theme(panel.grid = element_blank(), 
@@ -151,14 +155,14 @@ DotPlot(nonmalignant, features = unique(markers_df$gene)) +
 dev.off()
 
 ## featureplot----------
-pdf("plot_new/nonmalignant_featureplot.pdf",width = 10,height = 10)
+pdf("plot_new/nonmalignant_featureplot_withXHsample.pdf",width = 10,height = 10)
 FeaturePlot(nonmalignant, features=c("CD3E","CD8A", # T cells
                                      "CD68","FCGR1A", # Myeloid cells
                                      "CDH5", # Endothelial cells
                                      "COL1A1", # Fibroblasts
                                      "SOX4", # Tumor cells
                                      "AREG","CD1C" # DC
-                                     ), min.cutoff = "q1", max.cutoff = "q99",cols = c("lightgrey" ,"#DE1F1F"))
+                                     ), min.cutoff = "q5", max.cutoff = "q95",cols = c("lightgrey" ,"#DE1F1F"))
 dev.off()
 
 # ### CellID------------
@@ -261,6 +265,7 @@ table(ref3$cluster)
 saveRDS(ref3, file = "reference/GBM_atlas_TAM_reference.rds")
 
 ref1 <- readRDS("../PD-1/reference/reference_final_subset.rds")
+ref2 <- readRDS("reference/GBM_atlas_myeloid_reference.rds")
 
 #ref1: all cells
 assay_for_SingleR <- GetAssayData(nonmalignant, slot="data")
@@ -269,7 +274,7 @@ predictions <- SingleR(test=assay_for_SingleR, ref=cg, labels=cg$anno_ident)
 table(predictions$labels)
 celltype<-sapply(unique(as.character(nonmalignant$seurat_clusters)),
                  FUN = function(x) names(table(predictions$labels[nonmalignant$seurat_clusters==x]))[which.max(table(predictions$labels[nonmalignant$seurat_clusters==x]))])
-nonmalignant$celltype <- sapply(as.character(nonmalignant$seurat_clusters), function(x) celltype[x])
+nonmalignant$celltype <- as.vector(sapply(as.character(nonmalignant$seurat_clusters), function(x) celltype[x]))
 #nonmalignant$celltype <- predictions$labels
 table(nonmalignant$celltype)
 col.ls<-ArchRPalettes$stallion[1:length(table(nonmalignant$celltype))]
@@ -277,7 +282,7 @@ names(col.ls)<-names(table(nonmalignant$celltype))
 DimPlot(nonmalignant, group.by = "celltype", label = T, cols = col.ls)
 
 # ref2: myeloid cells
-myeloid <- nonmalignant[,nonmalignant$celltype%in%c("B cells","cDCs","Macrophages","Microglial","Monocytes","NK cells","T cells")]
+myeloid <- nonmalignant[,nonmalignant$celltype%in%c("Macrophages","Microglial","pDCs")&nonmalignant$seurat_clusters!=4]
 myeloid
 myeloid <- myeloid %>%
   FindNeighbors(reduction = "harmony") %>%
@@ -296,10 +301,6 @@ table(myeloid$immune_type,myeloid$seurat_clusters)
 celltype<-sapply(unique(as.character(myeloid$seurat_clusters)),
                  FUN = function(x) names(table(predictions$labels[myeloid$seurat_clusters==x]))[which.max(table(predictions$labels[myeloid$seurat_clusters==x]))])
 myeloid$immune_type <- sapply(as.character(myeloid$seurat_clusters), function(x) celltype[x])
-
-col.ls<-ArchRPalettes$stallion[1:length(table(myeloid$immune_type))]
-names(col.ls)<-names(table(myeloid$immune_type))
-
 
 saveRDS(myeloid, file = "result/myeloid.rds")
 
@@ -334,13 +335,12 @@ DimPlot(TAMs)
 dev.off()
 
 ## 手动注释-----------
-nonmalignant$celltype[nonmalignant$seurat_clusters==6] <- "T cell"
-nonmalignant$celltype[nonmalignant$seurat_clusters==10] <- "Endothelial cell"
-nonmalignant$celltype[nonmalignant$seurat_clusters==7] <- "Fibroblast"
-nonmalignant$celltype[nonmalignant$seurat_clusters==9] <- "Dendritic cell"
-nonmalignant$celltype[nonmalignant$seurat_clusters==8] <- "Proliferating macrophage"
-nonmalignant$celltype[nonmalignant$seurat_clusters==0|nonmalignant$seurat_clusters==1|
-                        nonmalignant$seurat_clusters==2|nonmalignant$seurat_clusters==3|nonmalignant$seurat_clusters==4] <- "Myeloid cells"
+nonmalignant$celltype <- "Myeloid cell"
+nonmalignant$celltype[nonmalignant$seurat_clusters==4|nonmalignant$seurat_clusters==12] <- "T cell"
+nonmalignant$celltype[nonmalignant$seurat_clusters==11] <- "Endothelial cell"
+nonmalignant$celltype[nonmalignant$seurat_clusters==9] <- "Fibroblast"
+nonmalignant$celltype[nonmalignant$seurat_clusters==8] <- "Dendritic cell"
+nonmalignant$celltype[nonmalignant$seurat_clusters==7] <- "Oligodendrocytes"
 nonmalignant$celltype[nonmalignant$seurat_clusters==5] <- "Unknown"
 
 CellColor <- ArchRPalettes$stallion[1:length(unique(nonmalignant$celltype))]
@@ -352,34 +352,11 @@ DimPlot(nonmalignant, group.by = "sample", cols = SampleColor, shuffle = T)
 DimPlot(nonmalignant, group.by = "seurat_clusters", label = T)
 dev.off()
 
-saveRDS(nonmalignant, file="result/nonmalignant_new.rds")
+saveRDS(nonmalignant, file="result/nonmalignant_withXHsample.rds")
 
 ### myeloid----------
-nonmalignant<-readRDS("result/nonmalignant_new.rds")
-myeloid <- nonmalignant[,nonmalignant$celltype=="Myeloid cells"]
-
-## 先找younger和younger之间的差异基因
-Idents(myeloid)<-"grade"
-markers <- FindMarkers(myeloid,ident.1 = "older",ident.2 = "younger",test.use = "wilcox")
-# markers_df = markers %>% group_by(cluster) %>% top_n(n = 200, wt = avg_log2FC)
-# markers_df <- markers_df[markers_df$p_val_adj<0.01,]
-# write.table(markers_df,file="result/myeloid_markers200_grade.txt",quote=F,sep="\t",row.names=F,col.names=T)
-
-library(ggVolcano)
-data <- add_regulate(markers, log2FC_name = "avg_log2FC",
-                     fdr_name = "p_val_adj",log2FC = 0.5, fdr = 0.01)
-data$row <- rownames(data)
-data$regulate[data$regulate=="Up"] <- "older"
-data$regulate[data$regulate=="Down"] <- "younger"
-data$regulate[data$regulate=="Normal"] <- "non-significant"
-
-# plot
-pdf("plot_new/volcano_BMDM.pdf")
-ggvolcano(data, x = "log2FoldChange", y = "padj", log2FC_cut = 0.5, FDR_cut = 0.01, legend_position = "DL",
-          colors = c("younger"="navy","older"="firebrick3","non-significant"="grey"), 
-          fills = c("younger"="navy","older"="firebrick3","non-significant"="grey"), 
-          label = "row", label_number = 10, output = FALSE)
-dev.off()
+nonmalignant<-readRDS("result/nonmalignant_withXHsample.rds")
+myeloid <- nonmalignant[,nonmalignant$celltype=="Myeloid cell"]
 
 # choice1
 BMDM_MB_markers <- read.xlsx("reference/13059_2017_1362_MOESM5_ESM.xlsx",sheetIndex = 1)
@@ -403,6 +380,17 @@ BMDM_MB_markers
 # FeaturePlot(myeloid, features = c("BMDM", "MG"), max.cutoff = "q90", min.cutoff = "q10", blend = T)
 
 ### GSVA
+myeloid <- myeloid %>%
+  RunHarmony("batch", plot_convergence = TRUE, nclust = 50, max_iter = 10, early_stop = T)
+
+myeloid <- myeloid %>%
+  FindNeighbors(reduction = "harmony") %>%
+  FindClusters(resolution=0.35)
+myeloid <- myeloid %>%
+  RunUMAP(dims = 1:40, reduction = "harmony")
+DimPlot(myeloid)
+table(myeloid$seurat_clusters)
+
 Idents(myeloid)<-"seurat_clusters"
 exp=AverageExpression(myeloid,assays = "RNA")
 counts2=exp[["RNA"]]
@@ -415,30 +403,53 @@ head(GSVA_hall)
 pheatmap::pheatmap(GSVA_hall, #热图的数据
                    cluster_rows = T,#行聚类
                    cluster_cols =T,#列聚类，可以看出样本之间的区分度
-                   show_colnames=F,
+                   show_colnames = T,
                    scale = "none") #以行来标准化，这个功能很不错
 
 subtype <- apply(GSVA_hall,2,function(x) rownames(GSVA_hall)[which.max(x)])
-myeloid$TAM_type <- sapply(myeloid$seurat_clusters,function(x) subtype[x])
+myeloid$TAM_type <- as.vector(sapply(myeloid$seurat_clusters,function(x) subtype[x]))
 #myeloid$TAM_type <- subtype
-DimPlot(myeloid,group.by = "TAM_type")
-saveRDS(myeloid, file="result/myeloid.rds")
+DimPlot(myeloid, group.by = "TAM_type")
+saveRDS(myeloid, file="result/myeloid_withXHsample.rds")
 
-myeloid <- subset(myeloid, TAM_type=="BMDM")
-table(myeloid$batch)
+BMDM <- subset(myeloid, TAM_type=="BMDM")
+table(BMDM$batch)
 
-myeloid <- myeloid %>%
+BMDM <- BMDM %>%
   RunHarmony("batch", plot_convergence = TRUE, nclust = 50, max_iter = 10, early_stop = T)
 
-myeloid <- myeloid %>%
+BMDM <- BMDM %>%
   FindNeighbors(reduction = "harmony") %>%
   FindClusters(resolution=0.35)
-myeloid <- myeloid %>%
+BMDM <- BMDM %>%
   RunUMAP(dims = 1:40, reduction = "harmony")
-DimPlot(myeloid)
-table(myeloid$seurat_clusters)
+DimPlot(BMDM)
+table(BMDM$seurat_clusters)
 
-saveRDS(myeloid, file = "result/BMDM.rds")
+saveRDS(BMDM, file = "result/BMDM_withXHsample.rds")
+
+## 先找younger和younger之间的差异基因
+Idents(BMDM)<-"grade"
+markers <- FindMarkers(BMDM,ident.1 = "older",ident.2 = "younger",test.use = "wilcox")
+# markers_df = markers %>% group_by(cluster) %>% top_n(n = 200, wt = avg_log2FC)
+# markers_df <- markers_df[markers_df$p_val_adj<0.01,]
+# write.table(markers_df,file="result/BMDM_markers200_grade.txt",quote=F,sep="\t",row.names=F,col.names=T)
+
+library(ggVolcano)
+data <- add_regulate(markers, log2FC_name = "avg_log2FC",
+                     fdr_name = "p_val_adj",log2FC = 0.5, fdr = 0.01)
+data$row <- rownames(data)
+data$regulate[data$regulate=="Up"] <- "older"
+data$regulate[data$regulate=="Down"] <- "younger"
+data$regulate[data$regulate=="Normal"] <- "non-significant"
+
+# plot
+pdf("plot_new/volcano_BMDM_withXHsample.pdf")
+ggvolcano(data, x = "log2FoldChange", y = "padj", log2FC_cut = 0.5, FDR_cut = 0.01, legend_position = "DL",
+          colors = c("younger"="navy","older"="firebrick3","non-significant"="grey"), 
+          fills = c("younger"="navy","older"="firebrick3","non-significant"="grey"), 
+          label = "row", label_number = 10, output = FALSE)
+dev.off()
 
 
 # myeloid <- subset(myeloid, seurat_clusters!=6)
@@ -455,30 +466,33 @@ saveRDS(myeloid, file = "result/BMDM.rds")
 # #FeaturePlot(myeloid, features=c("KLF6","NR4A1","BNIP3","GPNMB"), min.cutoff = "q10", max.cutoff = "q90",cols = c("lightgrey" ,"#DE1F1F"))
 # dev.off()
 
-pdf("plot_new/featureplot_BMDM.pdf")
-VlnPlot(myeloid, features=c("CD74","C1QB"), pt.size = 0.01, )#ggtitle("BMDM older vs younger")
-VlnPlot(myeloid, features=c("CD69","CCL3","IL1B"), pt.size = 0.01)#ggtitle("intersection between cluster 4 and older marker")
-VlnPlot(myeloid, features=c("PLIN2","NUPR1"), pt.size = 0.01)#ggtitle("intersection between cluster 4 and older marker")
-dev.off()
+# pdf("plot_new/featureplot_BMDM.pdf")
+# VlnPlot(BMDM, features=c("CD74","C1QB"), pt.size = 0.01, )#ggtitle("BMDM older vs younger")
+# VlnPlot(BMDM, features=c("CD69","CCL3","IL1B"), pt.size = 0.01)#ggtitle("intersection between cluster 4 and older marker")
+# VlnPlot(BMDM, features=c("PLIN2","NUPR1"), pt.size = 0.01)#ggtitle("intersection between cluster 4 and older marker")
+# dev.off()
 
-Idents(myeloid) <- "seurat_clusters"
-markers <- FindAllMarkers(myeloid, only.pos = TRUE, test.use = "wilcox")
+Idents(BMDM) <- "seurat_clusters"
+markers <- FindAllMarkers(BMDM, only.pos = TRUE, test.use = "wilcox")
 markers_df = markers %>% group_by(cluster) %>% top_n(n = 200, wt = avg_log2FC)
 markers_df <- markers_df[markers_df$p_val_adj<0.01,]
-write.table(markers_df,file="result/BMDM_markers200.txt",quote=F,sep="\t",row.names=F,col.names=T)
+write.table(markers_df,file="result/BMDM_markers200_withXHsample.txt",quote=F,sep="\t",row.names=F,col.names=T)
 
-#markers_df <- read.table("result/myeloid_markers200.txt", header = T)
-markers_df <- markers_df[-grep("^MT",markers_df$gene),]
-markers_df = markers_df %>% group_by(cluster) %>% top_n(n = 10, wt = avg_log2FC)
+markers_df <- read.table("result/BMDM_markers200_withXHsample.txt", header = T)
+markers_df = markers_df %>% 
+  dplyr::filter(!grepl("^MT|^RP", gene) & avg_log2FC > 1.25) %>% 
+  group_by(cluster) %>%
+  arrange(cluster, desc(-log(p_val_adj))) %>%
+  distinct(cluster, -log(p_val_adj), .keep_all = TRUE) %>%
+  slice_head(n = 10)
 #intersect(markers_df$gene[markers_df$cluster=="4"],data$row[data$regulate=="older"])
 
-
-pdf("plot_new/BMDM_heatmap.pdf")
-DoHeatmap(subset(myeloid, downsample = 500), features = markers_df$gene, size = 3)+ 
+pdf("plot_new/BMDM_heatmap_withXHsample.pdf")
+DoHeatmap(subset(BMDM, downsample = 500), features = markers_df$gene, size = 3)+ 
   scale_fill_viridis() + theme(text = element_text(size = 8)) + NoLegend()
 dev.off()
-pdf("plot_new/BMDM_dotplot.pdf", height = 8, width = 5)
-DotPlot(myeloid, features = unique(markers_df$gene)) + 
+pdf("plot_new/BMDM_dotplot_withXHsample.pdf", height = 8, width = 5)
+DotPlot(BMDM, features = unique(markers_df$gene), scale = T) + 
   coord_flip() + #翻转
   theme(panel.grid = element_blank(), 
         axis.text.y=element_text(size = 10))+ #轴标签
@@ -487,8 +501,11 @@ DotPlot(myeloid, features = unique(markers_df$gene)) +
   scale_colour_gradient2(low = "navy", high = "firebrick3")
 dev.off()
 
+cluster_color <- RColorBrewer::brewer.pal(10,"Set2")
+names(cluster_color) <- unique(BMDM$seurat_clusters)
+DimPlot(BMDM, label=T, cols = cluster_color)
+FeaturePlot(BMDM, "NUPR1", max.cutoff = "q90", min.cutoff = "q10")
 
-DimPlot(myeloid, label=T, cols = cluster_color)
 # myeloid$TAM_type<-NA
 # myeloid$TAM_type[myeloid$seurat_clusters==2|myeloid$seurat_clusters==1] <- "MHC"
 # myeloid$TAM_type[myeloid$seurat_clusters==0|myeloid$seurat_clusters==3] <- "Phago/lipid"
@@ -545,20 +562,22 @@ DimPlot(myeloid, label=T, cols = cluster_color)
 # myeloid <- myeloid %>%
 #   RunUMAP(dims = 1:40, reduction = "harmony")
 
-
-pdf("plot_new/BMDM_basics.pdf", width = 4, height = 3)
-DimPlot(myeloid, label=T, cols = cluster_color)
-DimPlot(myeloid, group.by = "sample", cols = SampleColor, shuffle = T)
-DimPlot(myeloid, group.by = "grade", cols = GradeColor)
-#DimPlot(myeloid, group.by = "TAM_type", cols = TAM_color)
+TAM_color<-ArchRPalettes$stallion[1:length(table(BMDM$TAM_type))]
+names(TAM_color)<-names(table(BMDM$TAM_type))
+pdf("plot_new/BMDM_basics_withXHsample.pdf", width = 4, height = 3)
+DimPlot(BMDM, label=T, cols = cluster_color)
+DimPlot(BMDM, group.by = "sample", cols = SampleColor, shuffle = T)
+DimPlot(BMDM, group.by = "grade", cols = GradeColor)
+DimPlot(BMDM, group.by = "TAM_type", cols = TAM_color)
 dev.off()
 
 table(myeloid$sample)
 library(forcats)
 library(ggplot2)
 library(gridExtra)
-cluster_color <- RColorBrewer::brewer.pal(10,"Set1")
-names(cluster_color) <- unique(myeloid$seurat_clusters)
+
+col.ls<-ArchRPalettes$stallion[1:length(table(myeloid$TAM_type))]
+names(col.ls)<-names(table(myeloid$TAM_type))
 
 CellInfo <- myeloid@meta.data
 P1=CellInfo %>% ggplot(aes(x=sample, fill=TAM_type)) +scale_fill_manual(values = col.ls)+
@@ -597,7 +616,7 @@ P4=ggplot(CellInfo, aes(TAM_type , fill=TAM_type))+geom_bar(stat="count",colour 
   scale_y_continuous(expand=c(0,0),trans ="log2",limits=c(256,131072),oob =  scales::squish)+coord_flip()+
   theme(legend.position = "none")
 P4g=ggplotGrob(P4)
-pdf("plot_new/proportion_TAM.pdf",width=7,height=5)
+pdf("plot_new/proportion_TAM_withXHsample.pdf",width=7,height=5)
 grid.arrange(grobs=list(P1g,P2g), widths = c(1,0.35),heights=c(0.19,1),layout_matrix = rbind(c(1, NA),c(1,2))) 
 grid.arrange(grobs=list(P3g,P4g), widths = c(1,0.35),heights=c(0.19,1),layout_matrix = rbind(c(1, NA),c(1,2))) 
 dev.off()

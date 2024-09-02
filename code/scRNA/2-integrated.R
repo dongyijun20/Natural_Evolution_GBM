@@ -8,16 +8,16 @@ TT01_1<-readRDS("result/TT01_1.rds")
 TT01_2<-readRDS("result/TT01_2.rds")
 TT02_1<-readRDS("result/TT02_1.rds")
 TT02_2<-readRDS("result/TT02_2.rds")
-XH01_1<-readRDS("result/bingzao1.rds")
-XH01_2<-readRDS("result/bingzao2.rds")
+XH01_1<-readRDS("result/XH01_1.rds")
+XH01_2<-readRDS("result/XH01_2.rds")
 
 library(RColorBrewer)
 names<-c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
 SampleColor <- brewer.pal(10, 'Paired')[c(2,1,4,3,6,5,8,7,10,9)]
 names(SampleColor)<-names
 
-GradeColor <- brewer.pal(10, 'Paired')[9:10]
-names(GradeColor) <- c("younger","older")
+GradeColor <- c("younger" = ,
+                "older" = )
 
 merge <- merge(x=NJ01_1,y=c(NJ01_2,NJ02_1,NJ02_2,TT01_1,TT01_2,TT02_1,TT02_2,XH01_1,XH01_2))
 merge
