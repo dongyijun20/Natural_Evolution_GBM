@@ -334,18 +334,15 @@ dev.off()
 
 ## Figure 1G: MES and NES signature scores of different samples--------
 library(AUCell)
-library(clusterProfiler)
 library(ggpubr)
+library(patchwork)
+library(tidyr)
 
 gene_sets <- markers
-
-# first use AUCell to generate signature scores
-cells_rankings <- AUCell_buildRankings(malignant[["RNA"]]$data) 
-
 NES = list(c('S100A10','FOSL2','SPP1','CAV1','ANXA1','VIM','CD44','SERPINH1',
              'LGALS3','CEBPB','ATF5','LGALS1'))
-
 gene_sets[["NES"]] <- NES[[1]]
+cells_rankings <- AUCell_buildRankings(malignant[["RNA"]]$data)
 cells_AUC <- AUCell_calcAUC(gene_sets, cells_rankings, aucMaxRank=nrow(cells_rankings)*0.1)
 
 malignant$AUC_AC  <- as.numeric(getAUC(cells_AUC)["AC", ])
@@ -354,23 +351,77 @@ malignant$AUC_NPC  <- as.numeric(getAUC(cells_AUC)["NPC", ])
 malignant$AUC_OPC  <- as.numeric(getAUC(cells_AUC)["OPC", ])
 malignant$AUC_NES  <- as.numeric(getAUC(cells_AUC)["NES", ])
 
-# set the order of x-axis
-malignant$sample <- as.factor(malignant$sample)
+# For plot: 10 boxplots per panel (cell-level); sample order and color from SampleColor
+sample_levels <- c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
+df_plot <- data.frame(
+  sample = factor(as.character(malignant$sample), levels = sample_levels),
+  MES = malignant$AUC_MES,
+  NES = malignant$AUC_NES
+)
 
-# plot boxplot of MES and NES scores
-df_MES <- data.frame(MES = malignant$AUC_MES, sample = malignant$sample)
-df_NES <- data.frame(NES = malignant$AUC_NES, sample = malignant$sample)
-comparelist <- list(c("NJ01_1","NJ01_2"),c("NJ02_1","NJ02_2"),c("TT01_1","TT01_2"),c("TT02_1","TT02_2"),c("XH01_1","XH01_2")) 
+# Patient-level stats for caption (LMM only)
+df_scores <- malignant@meta.data %>%
+  dplyr::mutate(
+    sample = as.character(sample),
+    patient = sub("_.*", "", sample),
+    lesion = sub(".*_", "", sample)
+  ) %>%
+  dplyr::group_by(patient, lesion) %>%
+  dplyr::summarise(
+    MES = mean(AUC_MES, na.rm = TRUE),
+    NES = mean(AUC_NES, na.rm = TRUE),
+    .groups = "drop"
+  ) %>%
+  dplyr::mutate(lesion = factor(lesion, levels = c("1", "2")))
 
-pdf("figures/Fig1G.pdf", height = 4, width = 5)
-ggboxplot(df_MES, x = "sample", y = "MES",
-          color = "sample", palette = SampleColor)+ ylab("MES score") +
-  stat_compare_means(comparisons = comparelist, label = "p.signif") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
-ggboxplot(df_NES, x = "sample", y = "NES",
-          color = "sample", palette = SampleColor)+ ylab("NES score")+
-  stat_compare_means(comparisons = comparelist, label = "p.signif") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+n_pairs <- dplyr::n_distinct(df_scores$patient)
+
+fmt_p <- function(p) {
+  if (is.na(p)) return("p = NA")
+  if (p < 0.001) "p < 0.001" else sprintf("p = %.3g", p)
+}
+
+if (!requireNamespace("lmerTest", quietly = TRUE)) {
+  stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
+}
+meta_ll <- malignant@meta.data
+meta_ll$patient <- sub("_.*", "", as.character(meta_ll$sample))
+meta_ll$lesion <- factor(sub(".*_", "", as.character(meta_ll$sample)), levels = c("1", "2"))
+lmm_mes <- lmerTest::lmer(AUC_MES ~ lesion + (1|patient), data = meta_ll)
+lmm_nes <- lmerTest::lmer(AUC_NES ~ lesion + (1|patient), data = meta_ll)
+p_lmm_mes <- summary(lmm_mes)$coefficients["lesion2", "Pr(>|t|)"]
+p_lmm_nes <- summary(lmm_nes)$coefficients["lesion2", "Pr(>|t|)"]
+caption_mes <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_mes))
+caption_nes <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_nes))
+
+p_mes <- ggpubr::ggboxplot(df_plot, x = "sample", y = "MES", color = "sample", fill = "sample", palette = SampleColor) +
+  labs(x = NULL, y = "MES score", subtitle = caption_mes) +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.title = element_text(face = "bold", colour = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.position = "none",
+    plot.subtitle = element_text(size = 9, hjust = 0.5)
+  )
+
+p_nes <- ggpubr::ggboxplot(df_plot, x = "sample", y = "NES", color = "sample", fill = "sample", palette = SampleColor) +
+  labs(x = NULL, y = "NES score", subtitle = caption_nes) +
+  theme_classic(base_size = 11) +
+  theme(
+    axis.title = element_text(face = "bold", colour = "black"),
+    axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+    axis.text.y = element_text(colour = "black"),
+    legend.position = "none",
+    plot.subtitle = element_text(size = 9, hjust = 0.5)
+  )
+
+p_combined <- p_mes + p_nes +
+  plot_annotation(tag_levels = "a") &
+  theme(plot.tag = element_text(face = "bold", size = 12))
+
+pdf("figures/Fig1G_review.pdf", height = 4, width = 10)
+print(p_combined)
 dev.off()
 
 pdf("figures/Sup_Fig1C.pdf", width = 20, height = 5)

@@ -58,27 +58,72 @@ ggsave("figures/Sup_Fig2A.svg", plot = p2, height = 4, width = 5.5, dpi = 300)
 
 
 ## Figure 2B: signature scores of myeloid cells in patients with different evolution grade--------
+library(dplyr)
+library(tidyr)
+library(ggplot2)
+library(ggpubr)
+library(RColorBrewer)
+# 10 samples including XH01 (avoid broken SampleColor.rds)
+SampleColor <- brewer.pal(10, 'Paired')[c(2,1,4,3,6,5,8,7,10,9)]
+names(SampleColor) <- c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
+
+myeloid <- AddModuleScore_UCell(myeloid, features = BMDM_MG_markers, name = NULL)
 
 # set the order of x-axis
 myeloid$sample <- as.factor(myeloid$sample)
+sample_levels <- c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
+df_BMDM <- data.frame(BMDM = myeloid$BMDM, sample = factor(as.character(myeloid$sample), levels = sample_levels))
+df_MG <- data.frame(MG = myeloid$MG, sample = factor(as.character(myeloid$sample), levels = sample_levels))
 
-# plot boxplot of BMDM and MG scores
-df_BMDM <- data.frame(BMDM = myeloid$BMDM, sample = myeloid$sample)
-df_MG <- data.frame(MG = myeloid$MG, sample = myeloid$sample)
-comparelist <- list(c("NJ01_1","NJ01_2"),c("NJ02_1","NJ02_2"),c("TT01_1","TT01_2"),c("TT02_1","TT02_2"),c("XH01_1","XH01_2")) 
+df_myeloid_scores <- myeloid@meta.data %>%
+  dplyr::mutate(
+    sample = as.character(sample),
+    patient = sub("_.*", "", sample),
+    lesion = sub(".*_", "", sample)
+  ) %>%
+  dplyr::group_by(patient, lesion, sample) %>%
+  dplyr::summarise(
+    BMDM = mean(BMDM, na.rm = TRUE),
+    MG = mean(MG, na.rm = TRUE),
+    .groups = "drop"
+  )
 
-pdf("figures/Fig2B.pdf", height = 4, width = 5)
-ggboxplot(df_BMDM, x = "sample", y = "BMDM",
-          color = "sample", palette = SampleColor)+ ylab("BMDM score") +
-  stat_compare_means(comparisons = comparelist, label = "p.signif", label.y = max(df_BMDM$BMDM)+0.05) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+fmt_p <- function(p) {
+  if (is.na(p)) return("p = NA")
+  if (p < 0.001) "p < 0.001" else sprintf("p = %.3g", p)
+}
+
+n_pairs <- dplyr::n_distinct(df_myeloid_scores$patient)
+
+if (!requireNamespace("lmerTest", quietly = TRUE)) {
+  stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
+}
+meta_ll <- myeloid@meta.data
+meta_ll$patient <- sub("_.*", "", as.character(meta_ll$sample))
+meta_ll$lesion <- factor(sub(".*_", "", as.character(meta_ll$sample)), levels = c("1", "2"))
+lmm_bmdm <- lmerTest::lmer(BMDM ~ lesion + (1|patient), data = meta_ll)
+lmm_mg   <- lmerTest::lmer(MG ~ lesion + (1|patient), data = meta_ll)
+p_lmm_bmdm <- summary(lmm_bmdm)$coefficients["lesion2", "Pr(>|t|)"]
+p_lmm_mg   <- summary(lmm_mg)$coefficients["lesion2", "Pr(>|t|)"]
+caption_BMDM <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_bmdm))
+caption_MG   <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_mg))
+
+pdf("figures/Fig2B_review.pdf", height = 4, width = 5)
+ggboxplot(df_BMDM, x = "sample", y = "BMDM", color = "sample", fill = "sample", palette = SampleColor) +
+  ylab("BMDM score") +
+  labs(subtitle = caption_BMDM) +
+  theme_classic(base_size = 11) +
+  theme(axis.title = element_text(face = "bold", colour = "black"), axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+        axis.text.y = element_text(colour = "black"), legend.position = "none", plot.subtitle = element_text(size = 9, hjust = 0.5))
 dev.off()
 
-pdf("figures/Sup_Fig2B.pdf", height = 4, width = 5)
-ggboxplot(df_MG, x = "sample", y = "MG",
-          color = "sample", palette = SampleColor)+ ylab("MG score")+
-  stat_compare_means(comparisons = comparelist, method = "wilcox.test", label = "p.signif",  label.y = max(df_MG$MG)+0.05) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+pdf("figures/Sup_Fig2B_review.pdf", height = 4, width = 5)
+ggboxplot(df_MG, x = "sample", y = "MG", color = "sample", fill = "sample", palette = SampleColor) +
+  ylab("MG score") +
+  labs(subtitle = caption_MG) +
+  theme_classic(base_size = 11) +
+  theme(axis.title = element_text(face = "bold", colour = "black"), axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+        axis.text.y = element_text(colour = "black"), legend.position = "none", plot.subtitle = element_text(size = 9, hjust = 0.5))
 dev.off()
 
 pdf("figures/Sup_Fig2C.pdf", width = 20, height = 5)
@@ -121,11 +166,11 @@ DimPlot(BMDM, group.by = "predicted.celltype_science", label = T)
 
 table(BMDM$subcluster)
 BMDM$subcluster_named <- BMDM$subcluster
-BMDM$subcluster_named[BMDM$subcluster_named=="S0"] <- "ELMO1+ MAC"
-BMDM$subcluster_named[BMDM$subcluster_named=="S3"] <- "HLA-hi MAC"
-BMDM$subcluster_named[BMDM$subcluster_named=="S2"] <- "NUPR1+ MDSC"
-BMDM$subcluster_named[BMDM$subcluster_named=="S1"] <- "VCAN+ MDSC"
-BMDM$subcluster_named[BMDM$subcluster_named=="S4"] <- "CXCL8+ MDSC"
+BMDM$subcluster_named[BMDM$subcluster=="S0"] <- "FRMD4A+ MAC1"
+BMDM$subcluster_named[BMDM$subcluster=="S3"] <- "HLA-hi MAC2"
+BMDM$subcluster_named[BMDM$subcluster=="S2"] <- "NUPR1+ MDSC"
+BMDM$subcluster_named[BMDM$subcluster=="S1"] <- "VCAN+ MDSC"
+BMDM$subcluster_named[BMDM$subcluster=="S4"] <- "CXCL8+ MDSC"
 
 SubclusterColor <- c('#ea9994','#f2c396','#9cd2ed','#86c7b4','#a992c0')
 names(SubclusterColor) <- unique(BMDM$subcluster_named)
@@ -156,14 +201,16 @@ markers_filter <-  markers_df %>%
 BMDM$subcluster <- factor(BMDM$subcluster, levels = c("S0", "S1", "S2", "S3", "S4"))
 Idents(BMDM) <- "subcluster"
 
-pdf("figures/Fig2D.pdf", height = 8, width = 5)
-DotPlot(BMDM, features = unique(markers_filter$gene), scale = T, group.by = "subcluster") + 
+dotplot1 <- DotPlot(BMDM, features = unique(markers_filter$gene), scale = T, group.by = "subcluster") + 
   coord_flip() + 
   theme(panel.grid = element_blank(), 
         axis.text.y=element_text(size = 10))+ 
   labs(x=NULL,y=NULL) + 
   guides(size = guide_legend("Percent Expression"))+ 
   scale_colour_gradient2(low = "navy", high = "firebrick3")
+
+pdf("figures/Fig2D.pdf", height = 8, width = 5)
+dotplot1
 dev.off()
 
 MDSC_markers <- list("E-MDSC" = c("GPNMB","SPP1","MT2A","NUPR1","LGALS1","PLIN2","CSTB",
@@ -197,15 +244,34 @@ BMDM <- AddModuleScore_UCell(BMDM, features = markers_list, name = NULL)
 # set the order of x-axis
 BMDM$sample <- as.factor(BMDM$sample)
 
-# plot boxplot of S2 scores
-df_S2 <- data.frame(S2 = BMDM$S2, sample = BMDM$sample)
-comparelist <- list(c("NJ01_1","NJ01_2"),c("NJ02_1","NJ02_2"),c("TT01_1","TT01_2"),c("TT02_1","TT02_2"),c("XH01_1","XH01_2")) 
+# Plot: 10 boxes (per sample). Stats: patient-level LMM only.
+df_S2 <- data.frame(S2 = BMDM$S2, sample = factor(as.character(BMDM$sample), levels = names(SampleColor)))
+df_S2_scores <- BMDM@meta.data %>%
+  dplyr::mutate(
+    sample = as.character(sample),
+    patient = sub("_.*", "", sample),
+    lesion = sub(".*_", "", sample)
+  ) %>%
+  dplyr::group_by(patient, lesion, sample) %>%
+  dplyr::summarise(S2 = mean(S2, na.rm = TRUE), .groups = "drop")
+n_pairs_s2 <- dplyr::n_distinct(df_S2_scores$patient)
+if (!requireNamespace("lmerTest", quietly = TRUE)) {
+  stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
+}
+meta_s2 <- BMDM@meta.data
+meta_s2$patient <- sub("_.*", "", as.character(meta_s2$sample))
+meta_s2$lesion <- factor(sub(".*_", "", as.character(meta_s2$sample)), levels = c("1", "2"))
+lmm_s2 <- lmerTest::lmer(S2 ~ lesion + (1|patient), data = meta_s2)
+p_lmm_s2 <- summary(lmm_s2)$coefficients["lesion2", "Pr(>|t|)"]
+caption_S2 <- sprintf("n=%d pairs; LMM %s", n_pairs_s2, fmt_p(p_lmm_s2))
 
-pdf("figures/Fig2E.pdf", height = 4, width = 5)
-ggboxplot(df_S2, x = "sample", y = "S2",
-          color = "sample", palette = SampleColor)+ ylab("S2 score") +
-  stat_compare_means(comparisons = comparelist, method = "wilcox.test", label = "p.signif", label.y = max(df_S2$S2) + 0.05) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+pdf("figures/Fig2E_review.pdf", height = 4, width = 5)
+ggboxplot(df_S2, x = "sample", y = "S2", color = "sample", fill = "sample", palette = SampleColor) +
+  ylab("S2 score") +
+  labs(subtitle = caption_S2) +
+  theme_classic(base_size = 11) +
+  theme(axis.title = element_text(face = "bold", colour = "black"), axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+        axis.text.y = element_text(colour = "black"), legend.position = "none", plot.subtitle = element_text(size = 9, hjust = 0.5))
 dev.off()
 
 pdf("figures/Sup_Fig2D.pdf", height = 5, width = 4)
@@ -395,15 +461,34 @@ dev.off()
 ## Figure 2H: the relationship between S2, S3 BMDM markers and MP1 metaprograms, the distribution of MP1 across samples----------
 BMDM <- AddModuleScore_UCell(BMDM, features = mp.genes, name = NULL)
 
-# plot boxplot of MP scores
-df_MP1 <- data.frame(MP1 = BMDM$MP1, sample = BMDM$sample)
-comparelist <- list(c("NJ01_1","NJ01_2"),c("NJ02_1","NJ02_2"),c("TT01_1","TT01_2"),c("TT02_1","TT02_2"),c("XH01_1","XH01_2")) 
+# Plot: 10 boxes (per sample). Stats: patient-level LMM only.
+df_MP1 <- data.frame(MP1 = BMDM$MP1, sample = factor(as.character(BMDM$sample), levels = names(SampleColor)))
+df_MP1_scores <- BMDM@meta.data %>%
+  dplyr::mutate(
+    sample = as.character(sample),
+    patient = sub("_.*", "", sample),
+    lesion = sub(".*_", "", sample)
+  ) %>%
+  dplyr::group_by(patient, lesion, sample) %>%
+  dplyr::summarise(MP1 = mean(MP1, na.rm = TRUE), .groups = "drop")
+n_pairs_mp1 <- dplyr::n_distinct(df_MP1_scores$patient)
+if (!requireNamespace("lmerTest", quietly = TRUE)) {
+  stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
+}
+meta_mp1 <- BMDM@meta.data
+meta_mp1$patient <- sub("_.*", "", as.character(meta_mp1$sample))
+meta_mp1$lesion <- factor(sub(".*_", "", as.character(meta_mp1$sample)), levels = c("1", "2"))
+lmm_mp1 <- lmerTest::lmer(MP1 ~ lesion + (1|patient), data = meta_mp1)
+p_lmm_mp1 <- summary(lmm_mp1)$coefficients["lesion2", "Pr(>|t|)"]
+caption_MP1 <- sprintf("n=%d pairs; LMM %s", n_pairs_mp1, fmt_p(p_lmm_mp1))
 
-pdf("figures/Fig2H.pdf", height = 4, width = 5)
-ggboxplot(df_MP1, x = "sample", y = "MP1",
-          color = "sample", palette = SampleColor)+ ylab("MP1 score") +
-  stat_compare_means(comparisons = comparelist, method = "wilcox.test", label = "p.signif", label.y = max(df_MP1$MP1) + 0.05) +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1)) + NoLegend()
+pdf("figures/Fig2H_review.pdf", height = 4, width = 5)
+ggboxplot(df_MP1, x = "sample", y = "MP1", color = "sample", fill = "sample", palette = SampleColor) +
+  ylab("MP1 score") +
+  labs(subtitle = caption_MP1) +
+  theme_classic(base_size = 11) +
+  theme(axis.title = element_text(face = "bold", colour = "black"), axis.text.x = element_text(angle = 45, hjust = 1, colour = "black"),
+        axis.text.y = element_text(colour = "black"), legend.position = "none", plot.subtitle = element_text(size = 9, hjust = 0.5))
 dev.off()
 
 data_cor <- data.frame(
@@ -506,7 +591,7 @@ dev.off()
 ## scoring of signatures and their correlation in BMDM---------------
 library(pheatmap)
 
-ferroptosis <- reqdRDS("reference/ferroptosis_markers.rds")
+ferroptosis <- readRDS("reference/ferroptosis_markers.rds")
 mp.genes <- readRDS("result/mp.genes.rds")
 hallmarks <- msigdbr(species = "Homo sapiens", category = "H")
 
@@ -531,7 +616,6 @@ pheatmap(correlation_matrix,
 dev.off()
 
 ## Figure 2I (modified): emapplot of different gene signatures---------
-
 older_markers <- FindMarkers(BMDM, ident.1 = "older", ident.2 = "younger", group.by = "grade", logfc.threshold = 0.3, only.pos = T)
 
 gene_list <- list(older = rownames(older_markers)[older_markers$p_val_adj<0.05], 
@@ -540,7 +624,7 @@ gene_list <- list(older = rownames(older_markers)[older_markers$p_val_adj<0.05],
                   ferroptosis_neg = ferroptosis$negative)
 
 names_gene_list <- names(gene_list)
-gene_list <- lapply(names, function(x) bitr(gene_list[[x]],'SYMBOL','ENTREZID','org.Hs.eg.db', drop = T)[,2])
+gene_list <- lapply(names_gene_list, function(x) bitr(gene_list[[x]],'SYMBOL','ENTREZID','org.Hs.eg.db', drop = T)[,2])
 names(gene_list) <- names_gene_list
 
 compare_results <- compareCluster(
@@ -574,3 +658,13 @@ emapplot(
     line = 0.2)
 )
 dev.off()
+
+write.table(myeloid@meta.data[,c("sample","grade","TAM_type","BMDM")], file = "tables/Fig2A.tsv", quote = F, sep = "\t")
+write.table(myeloid@reductions$umap@cell.embeddings, file = "tables/Fig2C.tsv", quote = F, sep = "\t")
+write.table(BMDM@meta.data[,c("sample","grade","TAM_type","subcluster_named","MP1","S2")], file = "tables/Fig2B.tsv", quote = F, sep = "\t")
+write.table(BMDM@reductions$umap@cell.embeddings, file = "tables/Fig2D.tsv", quote = F, sep = "\t")
+write.table(dotplot$data, file = "tables/Fig2E.tsv", quote = F, sep = "\t")
+write.table(dotplot1$data, file = "tables/Fig2F.tsv", quote = F, sep = "\t")
+write.table(correlation_matrix, file = "tables/Fig2G.tsv", quote = F, sep = "\t")
+write.table(compare_results@compareClusterResult, file = "tables/Fig2H.tsv", quote = F, sep = "\t")
+
