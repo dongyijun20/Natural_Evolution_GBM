@@ -1,150 +1,15 @@
-## Figure 4A: SSS genes regulation overview-------------
-library(OmnipathR)
-
-# net <- get_collectri(organism='human', split_complexes=FALSE)
-load("tmp/net_omnipath.rdata")
-intersection <- read.table("tables/TableS5.tsv", header = 1)[,1]
-net_filter <- net %>% dplyr::filter(source %in% intersection | target %in% intersection)
-
-sss_regulators <- unique(net$source)
-sss_tf_table <- net_filter %>% group_by(source) %>% summarise(n_targets = n()) %>% 
-  filter(n_targets >= 3)
-
-pdf("figures/Sup_Fig4A.pdf", height = 4, width = 4)
-ggplot(sss_tf_table, aes(x = reorder(source, n_targets), y = n_targets)) +
-  geom_col(fill = "steelblue") +
-  coord_flip() +
-  labs(x = "Transcription Factor", y = "Number of SSS target genes",
-       title = "Upstream TFs of the SSS gene signature") +
-  theme_minimal()
-dev.off()
-
-library(igraph)
-library(ggraph)
-library(tidyverse)
-
-net_plot <- net_filter %>%
-  filter(source %in% sss_tf_table$source) %>% 
-  mutate(reg_type = ifelse(mor == 1, "Activation",
-                           ifelse(mor == -1, "Repression", "Unknown")))
-
-g <- graph_from_data_frame(net_plot, directed = TRUE)
-
-node_df <- data.frame(name = V(g)$name)
-
-node_df <- node_df %>%
-  mutate(node_type = case_when(
-    name %in% intersection ~ "SSS gene",
-    name %in% net$source ~ "TF",
-    TRUE ~ "Other target"
-  ))
-
-set.seed(663)
-layout <- create_layout(g, layout = "kk") %>%
-  left_join(node_df, by = "name")
-
-pdf("figures/Fig4A.pdf", height = 6, width = 8)
-ggraph(layout) +
-  geom_edge_link(aes(color = reg_type),
-                 arrow = arrow(length = unit(2, 'mm'), type = "closed"),
-                 end_cap = circle(3, 'mm'),
-                 edge_width = 0.8, alpha = 0.6) +
-  geom_node_point(aes(color = node_type), size = 4) +
-  geom_node_text(aes(label = name), repel = TRUE, size = 3.5, 
-                 point.padding = unit(0.8, "lines")) +
-  scale_edge_color_manual(values = c("Activation" = "forestgreen", "Repression" = "firebrick")) +
-  scale_color_manual(values = c(
-    "TF" = "steelblue",
-    "Other target" = "grey30",
-    "SSS gene" = "orange"
-  )) +
-  theme_void() +
-  labs(title = "Known TF–Target Regulatory Network of SSS Genes",
-       edge_color = "Regulation",
-       color = "Node type")
-dev.off()
-
-interest_tf <- unique(node_df$name[node_df$node_type=="TF"])
-write.table(interest_tf, file = "tables/TableS6.tsv", quote = F, row.names = F)
-
-## Figure 4B: decoupleR of interested TFs, to ensure these TF have higher activiti in S2 BMDM------------
-library(dplyr)
+## Figure 4A: calculation for the Venn plot--------
 library(Seurat)
-library(tibble)
-library(pheatmap)
-library(tidyr)
-library(viper)
-library(decoupleR)
-library(ggplot2)
-library(patchwork)
-library(OmnipathR)
+library(ArchR)
+library(dplyr)
+library(VennDiagram)
 
-options(omnipathr.curl_verbose = TRUE)
-omnipath_set_cachedir(tempdir())
-options(future.globals.maxSize = 16 * 1024^3)
 
-sce <- readRDS("result/BMDM_withXHsample_harmony.rds")
+marker_list <- readRDS("result/BMDM_markers_filter.rds")
+BMDM_subcluster_markers <- marker_list$S2
+length(BMDM_subcluster_markers) #46
 
-Idents(sce) <- "subcluster"
-net <- get_collectri(organism='human', split_complexes=FALSE)
-
-mat <- as.matrix(sce@assays$RNA@data)
-
-plan("multisession",workers = 8)
-acts <- run_ulm(mat, net, minsize = 5,
-                .source='source', .target='target',.mor='mor')
-
-sce[['tfsulm']] <- acts %>%
-  pivot_wider(id_cols = 'source', 
-              names_from = 'condition',
-              values_from = 'score') %>%
-  column_to_rownames('source') %>%
-  Seurat::CreateAssayObject(.)
-DefaultAssay(object = sce) <- "tfsulm"
-sce <- ScaleData(sce)
-sce@assays$tfsulm@data <- sce@assays$tfsulm@scale.data
-
-df <- t(as.matrix(sce@assays$tfsulm@data)) %>%
-  as.data.frame() %>%
-  mutate(cluster = Idents(sce)) %>%
-  pivot_longer(cols = -cluster, 
-  names_to = "source", 
-  values_to = "score") %>% 
-  group_by(cluster, source) %>% 
-  summarise(mean = mean(score))
-
-top_acts_mat <- df %>%
-  filter(source %in% interest_tf) %>%
-  pivot_wider(id_cols = 'cluster', 
-              names_from = 'source',
-              values_from = 'mean') %>%
-  column_to_rownames('cluster') %>%
-  as.matrix()
-
-palette_length = 100
-my_color = colorRampPalette(c("darkblue","white","red"))(palette_length)
-
-my_breaks <- c(seq(-3, 0, length.out=ceiling(palette_length/2) + 1),
-               seq(0.05, 3, length.out=floor(palette_length/2)))
-
-top_acts_mat <- top_acts_mat[paste0("S",0:4),]
-
-library(pheatmap)
-pdf("figures/Fig4B.pdf", height = 4, width = 6)
-pheatmap(top_acts_mat,
-         border_color = NA,
-         color = my_color,
-         breaks = my_breaks,
-         cluster_rows = FALSE,
-         cluster_cols = TRUE,  
-         fontsize_row = 12,
-         fontsize_col = 10,
-         cellwidth = 15, 
-         cellheight = 25,
-         main = "TF activity across BMDM subclusters (decoupleR)")
-dev.off()
-
-## Figure 4B: bulk RNA-seq validation--------
+## bulk RNA-seq
 library(edgeR)
 library(tidyverse)
 library(readxl)
@@ -175,716 +40,1102 @@ res <- topTags(et, n = Inf)$table %>%
   rownames_to_column("gene_id") %>%
   left_join(count_data %>% select(gene_id, gene_name), by = "gene_id") %>% 
   mutate(group = case_when(
-    gene_name %in% intersection ~ "SSS gene",
+    gene_name %in% intersection ~ "SMF gene",
     gene_name %in% interest_tf ~ "TF",
     gene_name %in% c(score_list$Ferroptosis_neg, score_list$Ferroptosis_dual) ~ "Ferroptosis_related",
     !gene_name %in% c(intersection, interest_tf, score_list$Ferroptosis_neg, score_list$Ferroptosis_dual) ~ "Other"
   ))
 
-res_intersection <- res %>%
-  dplyr::filter(gene_name %in% c(intersection, interest_tf, score_list$Ferroptosis_neg, score_list$Ferroptosis_dual) &
-                  FDR < 0.05)
+erastin_induced_genes <- res %>%
+  filter(FDR < 0.05 & logFC > 0) %>%
+  pull(gene_name)
 
-pdf("figures/Fig4C.pdf", height = 5, width = 5)
-ggplot(res_intersection, aes(x = reorder(gene_name, logFC), y = logFC, fill = group)) +
-  geom_bar(stat = "identity") +
-  scale_fill_manual(values = c("TF" = "steelblue", "SSS gene" = "orange", "Ferroptosis_related" = "forestgreen")) +
-  coord_flip() +
-  labs(title = "Significant expression changes in erastin-induced THP-1",
-       x = "Gene", y = "log2 Fold Change") +
-  theme_minimal()
-dev.off()
+intersection_refined <- intersect(BMDM_subcluster_markers, erastin_induced_genes)
+write.table(intersection_refined, file = "tables/TableS5_refined.tsv", quote = F, row.names = F)
 
-## Figure 4C: bulk ATAC-seq validation--------
-library(GenomicRanges)
-library(TxDb.Hsapiens.UCSC.hg38.knownGene)
-
-# TSS ±2kb
-tss_gr <- promoters(genes(TxDb.Hsapiens.UCSC.hg38.knownGene), upstream = 2000, downstream = 2000)
-
-library(Rsubread)
-
-tss_saf <- data.frame(
-  GeneID = names(tss_gr),
-  Chr = as.character(seqnames(tss_gr)),
-  Start = start(tss_gr),
-  End = end(tss_gr),
-  Strand = ifelse(strand(tss_gr) == "*", "+", as.character(strand(tss_gr)))  # replace '*' with '+'
-)
-tss_saf <- tss_saf %>% filter(Start >= 1)
-
-# Save with tab-separated format and no row/col names
-write.table(tss_saf, "tmp/tss_regions.saf", sep = "\t", quote = FALSE, row.names = FALSE, col.names = TRUE)
-
-bam_files <- c("data/bulk_ATAC/Cleandata/Erastin/Erastin.bam", "data/bulk_ATAC/Cleandata/NC/NC.bam")
-
-counts <- featureCounts(files = bam_files,
-                        annot.ext = "tmp/tss_regions.saf",
-                        isGTFAnnotationFile = FALSE,
-                        isPairedEnd = TRUE,
-                        nthreads = 8)
-
-saveRDS(counts, file = "result/bulk_ATAC_count_matrix.rds")
-# counts <- readRDS("result/bulk_ATAC_count_matrix.rds")
-count_matrix <- counts$counts
-colnames(count_matrix) <- c("Erastin", "NC")
-
-library(edgeR)
-
-group <- factor(c("Erastin", "NC"))
-dge <- DGEList(counts = count_matrix, group = group)
-
-dge <- estimateCommonDisp(dge)
-et <- exactTest(dge, dispersion = 0.1)
-
-res_atac <- topTags(et, n = Inf)$table %>%
-  tibble::rownames_to_column("region") %>%
-  dplyr::select(region, logFC) %>%
-  rename(logFC_accessibility = logFC)
-
-library(org.Hs.eg.db)
-symbol_map <- AnnotationDbi::select(org.Hs.eg.db,
-                                    keys = res_atac$region,
-                                    columns = c("SYMBOL","ENSEMBL"),
-                                    keytype = "ENTREZID")
-merged <- merge(res_atac, symbol_map, by.x = "region", by.y = "ENTREZID")
-
-plot_df <- merged %>%
-  mutate(
-    group = case_when(
-      SYMBOL %in% intersection ~ "SSS gene",
-      SYMBOL %in% interest_tf ~ "TF",
-      TRUE ~ "Background"
-    )
-  )
-
-rna_logFC <- res %>%
-  select(gene_name, logFC) %>%
-  distinct() %>%
-  filter(!is.na(gene_name)) %>%
-  rename(SYMBOL = gene_name, logFC_expr = logFC)
-
-plot_df <- plot_df %>%
-  left_join(rna_logFC, by = "SYMBOL") %>%
-  mutate(logFC_expr = ifelse(is.na(logFC_expr),
-                             rna_logFC$logFC_expr[match(plot_df$ENSEMBL, rna_logFC$SYMBOL)],
-                             logFC_expr))
-
-color_map <- c(
-  "SSS gene" = "orange",
-  "TF" = "steelblue",
-  "Background" = "gray80"
-)
-
+library(ggplot2)
 library(ggrepel)
 
-pdf("figures/Sup_Fig4C.pdf", height = 5, width = 6)
-ggplot(plot_df, aes(x = logFC_expr, y = logFC_accessibility)) +
-  geom_point(aes(color = group), alpha = 0.3, size = 0.8) +
-  
-  geom_point(
-    data = plot_df %>% filter(group != "Background"),
-    aes(color = group),
-    size = 3
-  )  +
-  coord_cartesian(xlim = c(-3, 3), ylim = c(-3, 3)) +
-  
-  geom_text_repel(
-    data = plot_df %>%
-      filter(SYMBOL %in% c(intersection, interest_tf)),
-    aes(label = SYMBOL, color = group),
-    size = 3, max.overlaps = 500
-  ) +
-  
-  geom_vline(xintercept = 0, linetype = "dashed") +
-  geom_hline(yintercept = 0, linetype = "dashed") +
-  scale_color_manual(values = color_map) +
-  theme_minimal() +
-  labs(
-    title = "Erastin treated THP-1 RNA & ATAC changes",
-    x = "log2 FC (RNA-seq)",
-    y = "log2 FC (ATAC-seq)",
-    color = "Gene Set"
+plot_data <- res %>%
+  mutate(
+    is_S2_marker = gene_name %in% BMDM_subcluster_markers,
+    is_Selected = gene_name %in% intersection_refined,
+    
+    color_group = case_when(
+      is_Selected ~ "SMF Functional Core", 
+      is_S2_marker & !is_Selected ~ "S2 Repressed", 
+      TRUE ~ "Background"
+    ),
+    
+    label = ifelse(is_Selected, gene_name, NA)
   )
+
+xlim_val <- 2.5
+ylim_val <- 16
+
+pdf("figures/Fig4A_review.pdf", height = 4, width = 5)
+ggplot(plot_data, aes(x = logFC, y = -log10(FDR))) +
+  
+  # 1. Background Genes (Light Grey)
+  # Keeping them faint to highlight the S2 markers
+  geom_point(data = subset(plot_data, color_group == "Background"), 
+             color = "grey90", size = 1, alpha = 0.5) +
+  
+  # 2. S2 Repressed Genes (Scientific Blue)
+  # These are S2 markers that are downregulated by Erastin (Left side)
+  geom_point(data = subset(plot_data, color_group == "S2 Repressed"), 
+             color = "#3C5488", size = 2, alpha = 0.8) +
+  
+  # 3. SMF Functional Core (Scientific Red)
+  # These are the adaptive S2 markers upregulated by Erastin (Right side)
+  geom_point(data = subset(plot_data, color_group == "SMF Functional Core"), 
+             color = "#E64B35", size = 3) +
+  
+  # 4. Threshold Lines
+  geom_hline(yintercept = -log10(0.05), linetype = "dashed", color = "grey60") +
+  geom_vline(xintercept = c(0), linetype = "dashed", color = "grey60") +
+  
+  # 5. Labels (Only for the Functional Core)
+  geom_text_repel(aes(label = label), 
+                  box.padding = 0.5, 
+                  point.padding = 0.3,
+                  max.overlaps = 50,
+                  size = 3.5, 
+                  fontface = "bold", 
+                  color = "#E64B35",
+                  # Ensure labels stay within the zoomed area
+                  xlim = c(-xlim_val, xlim_val),
+                  ylim = c(0, ylim_val)) +
+  
+  # 6. Theme and Aesthetics
+  theme_classic() +
+  labs(x = "Log2 Fold Change (Erastin vs Control)",
+       y = "-Log10 FDR") +
+  
+  # 7. Zoom in without removing data points
+  coord_cartesian(xlim = c(-xlim_val, xlim_val), 
+                  ylim = c(0, ylim_val))
 dev.off()
 
-## Figure 4D: fingerprint of ATAC-seq-------
-library(ATACseqQC)
-library(MotifDb)
-library(BSgenome.Hsapiens.UCSC.hg38)
+# pdf("figures/Fig4A_review.pdf", height = 4, width = 4)
+# grid.newpage()
+# venn.plot <- draw.pairwise.venn(
+#   area1 = length(BMDM_subcluster_markers),
+#   area2 = length(erastin_induced_genes),
+#   cross.area = length(intersection_refined),
+#   category = c("S2 BMDM markers", "PC vs IT upregulated markers"),
+#   fill = c("coral", "lightblue"),
+#   cat.pos = c(0, 0),        # Positions in degrees (0 is center-top)
+#   cat.dist = c(0.02, 0.02), # Smaller distance = closer to center
+#   cat.cex = 1.2             # Optional: change label size
+# )
+# dev.off()
+    
+## Figure 4B: Survival Analysis with Expression-----------
+library(survival)
+library(survminer)
+library(tidyverse)
+library(TCGAbiolinks)
+library(GSVA)
 
-genome <- Hsapiens
-
-tf_motif <- query(MotifDb, "CEBPA")
-pfm <- as.list(tf_motif)[[1]]
-
-bamfile_A <- "data/bulk_ATAC/Cleandata/Erastin/Erastin.bam"
-result_A <- factorFootprints(bamfile_A, pfm=pfm, genome=genome,
-                             min.score="95%", upstream=100, downstream=100)
-
-bamfile_B <- "data/bulk_ATAC/Cleandata/NC/NC.bam"
-result_B <- factorFootprints(bamfile_B, pfm=pfm, genome=genome,
-                             min.score="95%", upstream=100, downstream=100)
-
-avg_A <- (colMeans(result_A$signal$`+`) + colMeans(result_A$signal$`-`)) / 2
-avg_B <- (colMeans(result_B$signal$`+`) + colMeans(result_B$signal$`-`)) / 2
-
-df <- data.frame(
-  Position = -((ncol(result_A$signal$`+`) - 1) / 2):((ncol(result_A$signal$`+`) - 1) / 2),
-  Erastin = avg_A,
-  NC = avg_B
+# Query for gene expression data (HTSeq counts or FPKM)
+query_expression <- GDCquery(
+  project = "TCGA-GBM",
+  data.category = "Transcriptome Profiling",
+  data.type = "Gene Expression Quantification",
+  workflow.type = "STAR - Counts"
 )
-df_long1 <- pivot_longer(df, cols = -Position, names_to = "Group", values_to = "Signal")
 
-tf_motif <- query(MotifDb, "ETV4")
-pfm <- as.list(tf_motif)[[1]]
+GDCdownload(query_expression)
+expression_data <- GDCprepare(query_expression)
+saveRDS(expression_data, "reference/TCGA/TCGA_GBM_expression_data.rds")
 
-bamfile_A <- "data/bulk_ATAC/Cleandata/Erastin/Erastin.bam"
-result_A <- factorFootprints(bamfile_A, pfm=pfm, genome=genome,
-                             min.score="95%", upstream=100, downstream=100)
+# Extract the expression matrix and rename rows
+fpkm_data_TCGA <- assay(expression_data, "fpkm_unstrand")
+rownames(fpkm_data_TCGA) <- rowData(expression_data)$gene_name
 
-bamfile_B <- "data/bulk_ATAC/Cleandata/NC/NC.bam"
-result_B <- factorFootprints(bamfile_B, pfm=pfm, genome=genome,
-                             min.score="95%", upstream=100, downstream=100)
+# Read gene set
+gene_set_list <- list(SMF = as.character(intersection_refined))
 
-avg_A <- (colMeans(result_A$signal$`+`) + colMeans(result_A$signal$`-`)) / 2
-avg_B <- (colMeans(result_B$signal$`+`) + colMeans(result_B$signal$`-`)) / 2
+# Run ssGSEA
+ssgsea_scores <- gsva(fpkm_data_TCGA, gene_set_list, method = "ssgsea", verbose = FALSE)
 
-df <- data.frame(
-  Position = -((ncol(result_A$signal$`+`) - 1) / 2):((ncol(result_A$signal$`+`) - 1) / 2),
-  Erastin = avg_A,
-  NC = avg_B
+# Add to clinical data
+clinical_data_TCGA <- as.data.frame(colData(expression_data)) 
+clinical_data_TCGA <- clinical_data_TCGA %>% 
+  mutate(SMF = ssgsea_scores["SMF", clinical_data_TCGA$barcode])
+
+# Group by quartiles
+clinical_data_TCGA <- clinical_data_TCGA %>%
+  mutate(group = case_when(
+    SMF <= median(SMF) ~ "Low",
+    SMF >= median(SMF) ~ "High",
+    TRUE ~ NA_character_ 
+  ))
+
+# Prepare survival info
+clinical_data_TCGA <- clinical_data_TCGA %>%
+  mutate(OS_time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_follow_up),
+         OS_status = ifelse(vital_status == "Dead", 1, 0))
+
+# Run survival analysis
+surv_obj <- Surv(time = clinical_data_TCGA$OS_time, event = clinical_data_TCGA$OS_status)
+fit <- survfit(surv_obj ~ group, data = clinical_data_TCGA)
+
+# Plot survival curve
+pdf("figures/Fig4B_review.pdf", height = 5, width = 4.5)
+ggsurvplot(fit, data = clinical_data_TCGA,
+           pval = TRUE,
+           risk.table = TRUE,
+           legend.labs = c("High", "Low"),
+           xlab = "Days",
+           ylab = "OS Rate (%)",
+           title = "Survival Analysis with SMF ssGSEA scoring in TCGA GBM",
+           palette = c("#8B235A","#005787"))
+dev.off()
+
+## Figure 4C: Survival Analysis with CGGA-------------
+fpkm_data1 <- read_table("reference/CGGA/CGGA.mRNAseq_693.RSEM-genes.20200506.txt")
+fpkm_data2 <- read_table("reference/CGGA/CGGA.mRNAseq_325.RSEM-genes.20200506.txt")
+
+# Keep shared genes and merge expression matrices
+identical_genes <- intersect(fpkm_data1$Gene_Name, fpkm_data2$Gene_Name)
+fpkm_data1 <- fpkm_data1 %>% column_to_rownames("Gene_Name")
+fpkm_data2 <- fpkm_data2 %>% column_to_rownames("Gene_Name")
+fpkm_data <- cbind(fpkm_data1[identical_genes, ], fpkm_data2[identical_genes, ])
+saveRDS(fpkm_data, file = "reference/CGGA/CGGA_GBM_expression_data.rds")
+
+# Define your signature gene set
+gene_set_list <- list(SMF = as.character(intersection_refined))
+
+# Run ssGSEA
+ssgsea_scores <- gsva(as.matrix(fpkm_data), gene_set_list, method = "ssgsea", verbose = FALSE)
+
+# Load and merge clinical data
+clinical_data1 <- read.table("reference/CGGA/CGGA.mRNAseq_693_clinical.20200506.txt", sep = "\t", header = TRUE)
+clinical_data2 <- read.table("reference/CGGA/CGGA.mRNAseq_325_clinical.20200506.txt", sep = "\t", header = TRUE)
+clinical_data_CGGA <- rbind(clinical_data1, clinical_data2) %>%
+  dplyr::filter(Histology == "GBM")
+
+# Match ssGSEA score to clinical samples
+clinical_data_CGGA$signature_score <- ssgsea_scores["SMF", clinical_data_CGGA$CGGA_ID]
+
+# Group patients by quartiles of signature score
+clinical_data_CGGA <- clinical_data_CGGA %>%
+  mutate(group = case_when(
+    signature_score < median(signature_score) ~ "Low",
+    signature_score >= median(signature_score) ~ "High",
+    TRUE ~ NA_character_
+  ))
+
+# Prepare survival variables
+surv_obj <- Surv(time = clinical_data_CGGA$OS, event = clinical_data_CGGA$Censor..alive.0..dead.1.)
+fit <- survfit(surv_obj ~ group, data = clinical_data_CGGA)
+
+# Plot KM survival curves
+pdf("figures/Fig4C_review.pdf", height = 5, width = 4.5)
+ggsurvplot(fit, data = clinical_data_CGGA,
+           pval = TRUE,
+           risk.table = TRUE,
+           legend.labs = c("High", "Low"),
+           xlab = "Days",
+           ylab = "OS Rate (%)",
+           title = "Survival Analysis with SMF ssGSEA scoring in CGGA GBM",
+           palette = c("#FDDE00", "#1068B1"))
+dev.off()
+
+## Figure 4D: Correlation of immune score----------
+library(clusterProfiler)
+library(org.Hs.eg.db)
+library(dplyr)
+
+# Subset your expression data
+high_samples <- na.omit(rownames(clinical_data_TCGA)[clinical_data_TCGA$group == "High"])
+low_samples <- na.omit(rownames(clinical_data_TCGA)[clinical_data_TCGA$group == "Low"])
+
+# Calculate average expression in high vs low group
+expr_high <- rowMeans(fpkm_data_TCGA[, high_samples])
+expr_low <- rowMeans(fpkm_data_TCGA[, low_samples])
+
+# Compute log2 fold-change
+logFC <- log2(expr_high + 1) - log2(expr_low + 1)
+
+# Prepare ranked gene list (named vector: gene_symbol -> logFC)
+gene_list <- sort(logFC, decreasing = TRUE)
+
+gene_df <- bitr(names(gene_list), fromType = "SYMBOL", 
+                toType = "ENTREZID", OrgDb = org.Hs.eg.db)
+
+# Replace gene symbols with Entrez IDs
+gene_list <- gene_list[gene_df$SYMBOL]
+names(gene_list) <- gene_df$ENTREZID
+
+ego <- gseGO(geneList = gene_list,
+             OrgDb = org.Hs.eg.db,
+             ont = "BP",
+             minGSSize = 10,
+             maxGSSize = 500,
+             pvalueCutoff = 0.05,
+             verbose = TRUE)
+
+library(enrichplot)
+grep("immune", ego@result$Description, value = TRUE)
+ego@result[ego@result$Description == "negative regulation of immune response",]
+
+pdf("figures/Fig4D_review.pdf", height = 4, width = 4)
+gseaplot2(ego, geneSetID = ego@result$ID[ego@result$Description == "negative regulation of immune response"], 
+          title = "negative regulation of immune response")
+dev.off()
+
+## Figure 4D: Survival Analysis with CIBERSORTx Deconvolution---------
+fpkm_data_TCGA <- cbind(GeneSymbol = rownames(fpkm_data_TCGA), fpkm_data_TCGA)
+fpkm_data_TCGA <- fpkm_data_TCGA[!duplicated(rownames(fpkm_data_TCGA)),]
+dim(fpkm_data_TCGA)
+
+write.table(fpkm_data_TCGA, "reference/cybersort/bulk_expression.tsv", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+# Save single-cell reference matrix 
+malignant <- readRDS("result/malignant_withXHsample_harmony.rds")
+myeloid <- readRDS("result/myeloid_withXHsample_harmony.rds")
+
+reference_matrix1 <- as.matrix(GetAssayData(BMDM, assay = "RNA", slot = "data"))
+reference_matrix2 <- as.matrix(GetAssayData(subset(myeloid, TAM_type != "BMDM"), assay = "RNA", slot = "data"))
+reference_matrix3 <- as.matrix(GetAssayData(malignant, assay = "RNA", slot = "data"))
+colnames(reference_matrix1) <- BMDM$subcluster
+colnames(reference_matrix2) <- subset(myeloid, TAM_type != "BMDM")$TAM_type
+colnames(reference_matrix3) <- malignant$subtype
+
+intersected_genes <- intersect(rownames(reference_matrix1), rownames(reference_matrix3))
+
+reference_matrix <- cbind(reference_matrix1[intersected_genes,],reference_matrix2[intersected_genes,],reference_matrix3[intersected_genes,])
+reference_matrix <- cbind(GeneSymbol = rownames(reference_matrix), reference_matrix)
+
+selected_cells <- sapply(unique(colnames(reference_matrix)), function(x) {
+  cell_indices <- which(colnames(reference_matrix) == x)
+  sample_size <- min(200, length(cell_indices))
+  sample(cell_indices, sample_size)
+})
+
+reference_matrix <- reference_matrix[,unlist(selected_cells)]
+dim(reference_matrix)
+
+write.table(reference_matrix, "reference/cybersort/single_cell_reference_matrix.tsv", sep = "\t", row.names = FALSE, col.names = TRUE, quote = FALSE)
+
+clinical_data
+# Merge CIBERSORTx results with clinical data
+cibersortx_results <- read.csv("result/CIBERSORTx_Job12_Results.csv")
+merged_data_cibersort <- cibersortx_results %>%
+  inner_join(clinical_data_TCGA, by = c("Mixture"="barcode"))
+
+# Define high and low NUPR1+ BMDM groups
+merged_data_cibersort <- merged_data_cibersort %>%
+  mutate(S2_cibersort_group = case_when(
+    S2 <= median(S2) ~ "Low",
+    S2 >= median(S2) ~ "High",
+    TRUE ~ NA_character_ 
+  ))
+
+# Kaplan-Meier survival analysis
+surv_obj_cibersort <- Surv(time = merged_data_cibersort$OS_time, event = merged_data_cibersort$OS_status)
+fit_cibersort <- survfit(surv_obj_cibersort ~ S2_cibersort_group, data = merged_data_cibersort)
+
+pdf("figures/Fig4E_review.pdf", height = 5, width = 4.5)
+ggsurvplot(fit_cibersort, data = merged_data_cibersort,
+           pval = TRUE,
+           risk.table = TRUE,
+           legend.title = "NUPR1+ MDSC Proportion",
+           legend.labs = c("High", "Low"),
+           xlab = "Days",
+           ylab = "OS Rate (%)",
+           title = "NUPR1+ MDSC Proportion in TCGA GBM (deconvoluted)",
+           palette = c("#D55E00","#0072B2"))
+dev.off()
+
+# ## Figure 4E: GLASS cohort for longitudinal validation---------------
+# # Load expression and metadata
+# gene_tpm_matrix <- read_tsv("reference/GLASS/gene_tpm_matrix_all_samples.tsv")
+# analysis_rnaseq_pairs <- read_csv("reference/GLASS/analysis_rnaseq_pairs.csv") %>%
+#   mutate(across(starts_with("tumor_barcode"), ~ gsub("-", ".", .)))
+# 
+# clinical_cases <- read_csv("reference/GLASS/clinical_cases.csv")
+# clinical_surgeries <- read_csv("reference/GLASS/clinical_surgeries.csv")
+# 
+# # Merge clinical info
+# clinical_GLASS <- clinical_cases %>%
+#   inner_join(clinical_surgeries, by = "case_barcode") %>%
+#   dplyr::filter(grade == "IV") %>%
+#   dplyr::select(case_barcode, case_project, case_source, case_sex, case_age_diagnosis_years,
+#          case_vital_status, case_overall_survival_mo, grade, idh_status, histology) %>%
+#   distinct()
+# 
+# merged_data <- analysis_rnaseq_pairs %>%
+#   inner_join(clinical_GLASS, by = "case_barcode")
+# 
+# # Ensure your gene set is a character vector of gene symbols
+# gene_set_list <- list(signature = as.character(intersection_refined))
+# 
+# # Prepare expression matrix: rows = genes, columns = samples
+# tpm_matrix <- gene_tpm_matrix %>%
+#   column_to_rownames("Gene_symbol") %>%
+#   as.matrix()
+# 
+# # Optional: log2 transform
+# tpm_matrix_log <- log2(tpm_matrix + 1)
+# 
+# # Compute ssGSEA score per sample
+# ssgsea_result <- gsva(tpm_matrix_log, gene_set_list, method = "ssgsea", verbose = FALSE)
+# 
+# # Reshape to long format
+# signature_scores <- data.frame(
+#   tumor_barcode = colnames(ssgsea_result),
+#   signature = as.numeric(ssgsea_result[1, ])
+# )
+# 
+# # Merge ssGSEA scores into paired data
+# final_data <- merged_data %>%
+#   inner_join(signature_scores, by = c("tumor_barcode_a" = "tumor_barcode")) %>%
+#   rename(signature_a = signature) %>%
+#   inner_join(signature_scores, by = c("tumor_barcode_b" = "tumor_barcode")) %>%
+#   rename(signature_b = signature) 
+# 
+# quartile_a <- quantile(final_data$signature_a, probs = c(0.5), na.rm = TRUE)
+# quartile_b <- quantile(final_data$signature_b, probs = c(0.5), na.rm = TRUE)
+# 
+# final_data <- final_data %>%
+#   mutate(
+#     tumor_type_a = ifelse(sample_type_a == "TP", "Primary", "Recurrent"),
+#     tumor_type_b = ifelse(sample_type_b == "TP", "Primary", "Recurrent"),
+#     survival_time = case_overall_survival_mo,
+#     survival_status = ifelse(case_vital_status == "dead", 1, 0),
+#     signature_group = case_when(
+#       signature_a <= signature_b ~ "Up",
+#       signature_a > signature_b ~ "Down",
+#       TRUE ~ NA
+#     ),
+#     diff = signature_b - signature_a,
+#     group_a = case_when(
+#       signature_a <= quartile_a[1] ~ "Low",
+#       signature_a >= quartile_a[1] ~ "High",
+#       TRUE ~ NA
+#     ),
+#     group_b = case_when(
+#       signature_b <= quartile_b[1] ~ "Low",
+#       signature_b >= quartile_b[1] ~ "High",
+#       TRUE ~ NA
+#     ),
+#     group_combined = paste0(group_a, "_to_", group_b)
+#   ) %>%
+#   arrange(diff) %>%
+#   mutate(case_barcode_ordered = paste0(case_barcode, "_", row_number())) %>%
+#   mutate(
+#     case_sex = factor(case_sex),
+#     idh_status = factor(idh_status)
+#   )
+# 
+# # Survival analysis
+# surv_obj <- Surv(time = final_data$survival_time, event = final_data$survival_status)
+# fit <- survfit(surv_obj ~ group_a + group_b, data = final_data)
+# 
+# pdf("figures/Fig4E_review.pdf", height = 6, width = 6)
+# ggsurvplot(fit, data = final_data,
+#            pval = TRUE,
+#            risk.table = TRUE,
+#            legend.title = "Gene Set Change",
+#            xlab = "Survival Time (Months)",
+#            ylab = "Overall Survival Probability")
+# dev.off()
+# 
+# # Waterfall plot
+# pdf("figures/Sup_Fig4C.pdf", height = 4, width = 6)
+# ggplot(final_data, aes(x = factor(case_barcode_ordered, levels = case_barcode_ordered), y = diff, fill = signature_group)) +
+#   geom_bar(stat = "identity") +
+#   labs(
+#     x = "Case Barcode",
+#     y = "Difference in Gene Set Score (Recurrent - Primary)",
+#     fill = "Change Group",
+#     title = "Waterfall Plot of Gene Set Score Differences"
+#   ) +
+#   theme_bw() +
+#   theme(
+#     panel.grid = element_blank(),
+#     axis.text.x = element_blank(),
+#     axis.ticks.x = element_blank()
+#   )
+# dev.off()
+
+## Figure 4F: cox model------
+h_hypoxia <- score_list$Hypoxia
+
+macrophage_sig <- score_list$BMDM
+
+gene_set_list <- list(
+  SMF = as.character(intersection_refined),
+  Hypoxia_Score = h_hypoxia,
+  Macrophage_Abundance = macrophage_sig
 )
-df_long2 <- pivot_longer(df, cols = -Position, names_to = "Group", values_to = "Signal")
 
+# Run ssGSEA
+ssgsea_scores <- gsva(fpkm_data_TCGA, gene_set_list, method = "ssgsea", verbose = FALSE)
 
-pdf("figures/Sup_Fig4E.pdf", height = 4, width = 5)
-ggplot(df_long1, aes(x = Position, y = Signal, color = Group)) +
-  geom_line(size = 0.8) +
-  theme_minimal(base_size = 14) +
-  labs(
-    title = "TF Footprint (CEBPA)",
-    x = "Position relative to motif (bp)",
-    y = "Insertion Signal"
-  ) +
-  scale_color_manual(values = c("Erastin" = "#D95F02", "NC" = "#1B9E77"))
-ggplot(df_long2, aes(x = Position, y = Signal, color = Group)) +
-  geom_line(size = 0.8) +
-  theme_minimal(base_size = 14) +
-  labs(
-    title = "TF Footprint (ETV4)",
-    x = "Position relative to motif (bp)",
-    y = "Insertion Signal"
-  ) +
-  scale_color_manual(values = c("Erastin" = "#D95F02", "NC" = "#1B9E77"))
+# Prepare Clinical Data
+clinical_data_TCGA <- as.data.frame(colData(expression_data)) 
+
+# Merge Scores into Clinical Data
+clinical_data_TCGA <- clinical_data_TCGA %>% 
+  mutate(
+    SMF = ssgsea_scores["SMF", clinical_data_TCGA$barcode],
+    Hypoxia_Score = ssgsea_scores["Hypoxia_Score", clinical_data_TCGA$barcode],
+    Macrophage_Abundance = ssgsea_scores["Macrophage_Abundance", clinical_data_TCGA$barcode]
+  )
+
+cox_data_stratified <- clinical_data_TCGA %>%
+  filter(paper_IDH.status == "WT") %>% 
+  mutate(
+    # Handle Survival Data
+    OS_time = ifelse(!is.na(days_to_death), days_to_death, days_to_last_follow_up),
+    OS_status = ifelse(vital_status == "Dead", 1, 0)
+  ) %>%
+  filter(!is.na(OS_time) & !is.na(OS_status)) %>% # Remove missing survival data
+  mutate(
+    Hypoxia_Group = ifelse(Hypoxia_Score > median(Hypoxia_Score, na.rm=TRUE), "High Hypoxia", "Low Hypoxia"),
+    Hypoxia = scale(Hypoxia_Score),
+    MGMT = factor(paper_MGMT.promoter.status),
+    SMF = scale(SMF),
+    SMF_Group = factor(ifelse(SMF > median(SMF, na.rm=TRUE), "High SMF", "Low SMF"), levels = c("Low SMF","High SMF")),
+    BMDM = scale(Macrophage_Abundance),
+    Age = scale(age_at_diagnosis))
+
+fit_all <- coxph(Surv(OS_time, OS_status) ~ 
+                    SMF_Group + 
+                    Hypoxia +
+                    BMDM +
+                    Age +
+                    MGMT, 
+                  data = cox_data_stratified)
+summary(fit_all)
+
+pdf("figures/Fig4F_review.pdf", height = 4, width = 7)
+forest_model(fit_all)
 dev.off()
 
-## Figure 4E: UMAP of scATAC-seq data-------------
-library(Signac)
-library(ArchR)
-
-integrated <- readRDS("result/XH02_signac_integration.rds")
-
-integrated$group <- paste(integrated$grade, integrated$celltype)
-
-group_pal <- c("older Malignant" = "#8C1217", "older Myeloid" = "#171C40", "older Oligodendrocyte" = "#14602E", "older Stromal" = "#5E1C62", "older T Cell" = "#A6531D",
-               "younger Malignant" = "#F68A8E", "younger Myeloid" = "#8087B5", "younger Oligodendrocyte" = "#6FC98B", "younger Stromal" = "#C280C9", "younger T Cell" = "#FBBF94")
-
-pdf("figures/Fig4D.pdf", width = 6, height = 4)
-DimPlot(
-  object = integrated,
-  group.by = 'group', alpha = 0.8,
-  cols = group_pal, shuffle = T,
-  repel = TRUE) + 
-  ggtitle('scATAC-seq')
-dev.off()
-
-DefaultAssay(integrated) <- "RNA"
-library(UCell)
+## Figure 4G: SMF correlates with MES----------
 library(readxl)
-score_list <- readRDS("result/gene_list_Fig3A.rds")
 markers<-as.list(read_excel("reference/mmc2.xlsx", skip = 3))
 markers<-lapply(markers,function(x) na.omit(x))
 markers<-markers[!names(markers)%in%c("G1/S","G2/M")]
 markers<-list(MES = c(markers$MES1,markers$MES2),
-              NES = c('S100A10','FOSL2','SPP1','CAV1','ANXA1','VIM','CD44','SERPINH1',
-                      'LGALS3','CEBPB','ATF5','LGALS1'),
-              Hypoxia = score_list$Hypoxia,
-              BMDM = score_list$BMDM,
-              Ferroptosis_neg = score_list$Ferroptosis_neg)
-integrated <- AddModuleScore_UCell(integrated, markers, name = NULL)
+              NPC = c(markers$NPC1,markers$NPC2),
+              OPC = markers$OPC,
+              AC = markers$AC)
+mes_genes <- markers$MES
 
-pdf("figures/Sup_Fig4D.pdf", height = 4, width = 3)
-VlnPlot(integrated[,integrated$celltype=="Malignant"], group.by = "grade", c("MES","NES"), stack = T, flip = T) + NoLegend() 
-VlnPlot(integrated[,integrated$celltype=="Myeloid"], group.by = "grade", c("BMDM","Hypoxia","Ferroptosis_neg"), stack = T, flip = T) + NoLegend()
-dev.off()
+gene_set_list_mes <- list(MES_Score = mes_genes, SMF_Score = intersection_refined)
+scores <- gsva(fpkm_data_TCGA, gene_set_list_mes, method = "ssgsea", verbose = F)
 
-## Figure 4F: Motif Deviation Score of scATAC---------------
-library(JASPAR2020)
-library(TFBSTools)
-library(BSgenome.Hsapiens.UCSC.hg38)
-library(patchwork)
+df_cor <- as.data.frame(t(scores))
+library(ggpubr)
 
-pfm <- getMatrixSet(
-  x = JASPAR2020,
-  opts = list(collection = "CORE", tax_group = 'vertebrates', all_versions = FALSE)
-)
-
-DefaultAssay(integrated) <- "peaks"
-integrated <- AddMotifs(
-  object = integrated, assay = "peaks",
-  genome = BSgenome.Hsapiens.UCSC.hg38,
-  pfm = pfm
-)
-
-da_peaks <- FindMarkers(
-  object = integrated,
-  ident.1 = 'older Myeloid',
-  ident.2 = 'younger Myeloid',
-  group.by = "group",
-  test.use = 'LR',
-  min.pct = 0.05,
-  latent.vars = 'nCount_peaks'
-)
-
-top.da.peak <- rownames(da_peaks[da_peaks$p_val < 0.005 & da_peaks$pct.1 > 0.2 & da_peaks$avg_log2FC > 1, ])
-length(top.da.peak)
-
-enriched.motifs <- FindMotifs(
-  object = integrated,
-  features = top.da.peak
-)
-
-MotifPlot(
-  object = integrated,
-  motifs = head(rownames(enriched.motifs))
-)
-
-saveRDS(integrated, file = "result/XH02_signac_integration.rds")
-
-library(GenomeInfoDb)
-standard_chromosomes <- paste0("chr", c(1:22, "X", "Y"))
-counts <- GetAssayData(integrated[["peaks"]], slot = "counts")
-current_ranges <- granges(integrated[["peaks"]])
-names(current_ranges) <- rownames(counts)
-filtered_ranges <- current_ranges[seqnames(current_ranges) %in% standard_chromosomes]
-counts_filtered <- counts[names(filtered_ranges), ]
-new_peaks_assay <- CreateChromatinAssay(counts = counts_filtered, ranges = filtered_ranges)
-integrated[["peaks"]] <- new_peaks_assay
-
-integrated <- RunChromVAR(
-  object = integrated,
-  genome = BSgenome.Hsapiens.UCSC.hg38
-)
-
-DefaultAssay(integrated) <- 'chromvar'
-
-differential.activity <- FindMarkers(
-  object = integrated, 
-  group.by = "group",
-  ident.1 = 'older Myeloid',
-  ident.2 = 'younger Myeloid',
-  mean.fxn = rowMeans,
-  fc.name = "avg_diff"
-)
-
-top.diff.peak <- rownames(differential.activity[differential.activity$p_val < 0.005 & differential.activity$pct.1 > 0.2 & 
-                                                  differential.activity$avg_diff > 1, ])
-
-MotifPlot(
-  object = integrated,
-  motifs = head(top.diff.peak),
-  assay = 'peaks'
-)
-
-opts <- list(species = 9606)
-pfm_list <- getMatrixSet(JASPAR2020, opts)
-
-motif_df <- data.frame(
-  motif_id = sapply(pfm_list, ID),
-  tf_name = sapply(pfm_list, name),
-  stringsAsFactors = FALSE
-)
-
-matched_tfs <- motif_df[motif_df$motif_id %in% top.diff.peak, ]
-
-DefaultAssay(integrated) <- "chromvar"
-chromvar_avg <- AverageExpression(integrated, assays = "chromvar", group.by = "group")$chromvar
-
-gene_avg <- AverageExpression(integrated, assays = "RNA", group.by = "group")$RNA
-
-matched_tfs$clean_tf <- gsub("::.*", "", matched_tfs$tf_name)
-matched_tfs$clean_tf <- gsub("\\(.*\\)", "", matched_tfs$clean_tf)
-matched_tfs$clean_tf <- gsub("var\\.\\d+", "", matched_tfs$clean_tf)
-matched_tfs <- matched_tfs %>% filter(clean_tf %in% rownames(gene_avg) & tf_name %in% enriched.motifs$motif.name)
-
-motif_matrix <- chromvar_avg[matched_tfs$motif_id, ]
-gene_matrix <- gene_avg[matched_tfs$clean_tf, ]
-rownames(gene_matrix) <- matched_tfs$tf_name
-
-motif_matrix <- t(scale(t(motif_matrix)))
-gene_matrix <- t(scale(t(gene_matrix)))
-
-keep_motif <- which(apply(motif_matrix, 1, function(x) which.max(x) == 2))
-keep_gene <- which(apply(gene_matrix, 1, function(x) x[2]>x[7]))
-keep_row <- intersect(keep_motif, keep_gene)
-
-motif_mat <- as.matrix(motif_matrix)[keep_row,]
-gene_mat <- as.matrix(gene_matrix)[keep_row,]
-
-dist_mat <- dist(gene_mat)
-hc <- hclust(dist_mat)
-ordered_TFs <- hc$order
-
-motif_mat <- motif_mat[ordered_TFs,]
-gene_mat <- gene_mat[ordered_TFs,]
-
-sss_tss <- annotations[annotations$gene_name %in% intersection]
-promoter_regions <- promoters(sss_tss, upstream = 2000, downstream = 500)
-
-motif_object <- Motifs(integrated)
-motif_matrix <- motif_object@data[,rownames(motif_mat)]
-
-peak_gr <- granges(integrated[["peaks"]])
-names(peak_gr) <- rownames(integrated[["peaks"]])
-peaks_in_promoter <- subsetByOverlaps(peak_gr, sss_promoter_region)
-
-motif_promoter_matrix <- motif_matrix[rownames(motif_matrix) %in% names(peaks_in_promoter), ]
-
-motif_sums <- Matrix::colSums(motif_promoter_matrix)
-motif_keep <- as.vector(which(motif_sums > 0))
-
-motif_mat_filtered <- motif_mat[motif_keep,]
-gene_mat_filtered <- gene_mat[motif_keep,]
-
-library(Matrix)
-motif_avg_score <- motif_promoter_matrix[, motif_keep]
-motif_score_df <- as.data.frame(as.matrix(motif_avg_score))
-motif_score_df$peak <- rownames(motif_promoter_matrix)
-
-peak_to_gene <- findOverlaps(peaks_in_promoter, sss_promoter_region)
-peak_gene_map <- data.frame(
-  peak = names(peaks_in_promoter)[queryHits(peak_to_gene)],
-  gene = sss_promoter_region$gene_name[subjectHits(peak_to_gene)]
-)
-
-motif_score_long <- reshape2::melt(motif_score_df, id.vars = "peak", variable.name = "TF", value.name = "score")
-motif_score_long <- merge(motif_score_long, peak_gene_map, by = "peak") %>% 
-  distinct()
-motif_score_summarized <- motif_score_long %>%
-  dplyr::group_by(TF, gene) %>%
-  dplyr::summarise(score = sum(score), .groups = 'drop')
-
-motif_df <- melt(motif_mat_filtered)
-colnames(motif_df) <- c("TF", "CellType", "Activity")
-motif_df$Source <- "Motif"
-
-gene_df <- melt(gene_mat_filtered)
-colnames(gene_df) <- c("TF", "CellType", "Activity")
-gene_df$Source <- "Gene"
-
-library(RColorBrewer)
-library(scales)
-
-colors <- rev(brewer.pal(11, "RdYlBu"))
-activity_range <- range(motif_df$Activity, na.rm = TRUE)
-mid_val <- rescale(0, to = c(0, 1), from = activity_range)
-
-p1 <- ggplot(motif_df, aes(x = CellType, y = TF, fill = Activity)) +
-  geom_tile() +
-  scale_fill_gradientn(
-    colors = colors,
-    values = rescale(c(activity_range[1], 0, activity_range[2])),
-    limits = activity_range
-  ) +
-  theme_minimal() +
-  labs(title = "chromVAR Motif Activity") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-p2 <- ggplot(gene_df, aes(x = CellType, y = TF, fill = Activity)) +
-  geom_tile() +
-  scale_fill_viridis(option = "D") +
-  theme_minimal() +
-  labs(title = "TF Gene Activity") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-p3 <- ggplot(motif_score_summarized, aes(x = gene, y = TF, fill = score)) +
-  geom_tile() +
-  scale_fill_viridis_c(option = "C") +
-  theme_minimal() +
-  labs(title = "Motif binding to 14 genes' promoters") +
-  theme(axis.text.x = element_text(angle = 45, hjust = 1))
-
-pdf("figures/Fig4E.pdf", height = 16, width = 12)
-(p1 | p2 | p3) + plot_layout(ncol = 3, widths = c(1, 1, 1))
-dev.off()
-
-interest_tf2 <- intersect(gene_df$TF, interest_tf)
-interest_tf2
-
-unique(as.vector(motif_df$TF[gene_df$TF=="CEBPA"]))
-motif_score_summarized %>% filter(TF == "MA0102.4")
-motif_df %>% filter(TF == "MA0102.4")
-
-# motif footprinting-------
-library(motifmatchr)
-library(JASPAR2020)
-library(TFBSTools)
-library(BSgenome.Hsapiens.UCSC.hg38)
-
-# For sample 1
-cells_1 <- grep("_1$", colnames(integrated), value = TRUE)
-barcode_map_1 <- setNames(
-  object = sub("_1$", "", cells_1),
-  nm = cells_1
-)
-
-frags1 <- CreateFragmentObject(
-  path = "data/scATAC_new/result/fragments.tsv.gz",
-  cells = barcode_map_1
-)
-
-# For sample 2
-cells_2 <- grep("_2$", colnames(integrated), value = TRUE)
-barcode_map_2 <- setNames(
-  object = sub("_2$", "", cells_2),
-  nm = cells_2
-)
-
-frags2 <- CreateFragmentObject(
-  path = "data/scATAC_new/result2/fragments.tsv.gz",
-  cells = barcode_map_2
-)
-
-# Assign the fragment objects to the Seurat object
-Fragments(integrated) <- list(frags1, frags2)
-
-DefaultAssay(integrated) <- "peaks"
-
-integrated <- Footprint(
-  object = integrated,
-  motif.name = interest_tf2,
-  genome = BSgenome.Hsapiens.UCSC.hg38
-)
-
-plot.data <- GetFootprintData(
-  object = integrated,
-  features = interest_tf2,
-  group.by = "group"
-) %>% na.omit() %>% 
-  filter(!group %in% c("younger T Cell","older T Cell","younger Stromal","older Stromal")) %>% 
-  mutate(group = factor(group, levels = rev(names(group_pal))))
+pdf("figures/Fig4G_review.pdf", height = 4, width = 4)
+ggscatter(df_cor, x = "SMF_Score", y = "MES_Score", 
+          color = "grey70",    
+          shape = 16,          
+          size = 1.5,         
+          alpha = 0.6,        
+          
+          add = "reg.line", 
+          
+          add.params = list(color = "#B22222", fill = "#CCCCCC"), 
+          
+          conf.int = TRUE, 
+          cor.coef = TRUE, 
+          cor.method = "pearson",
+          
+          xlab = "SMF Signature Score", 
+          ylab = "Mesenchymal (MES) Score") +
   
-plot.list <- lapply(interest_tf2, function(x){
-  ggplot(plot.data[plot.data$feature==x,], aes(x = position, y = norm.value, color = group)) +
-    geom_line(alpha = 0.8) +
-    theme_classic() +
-    scale_color_manual(values = group_pal) +
-    labs(y = "Footprint signal", color = "Cell type") +
-    ggtitle(x)
-})
-
-pdf("figures/Fig4F.pdf", height = 4, width = 6)
-plot.list
+  ggtitle("SMF correlates with MES state") +
+  theme_classic()
 dev.off()
 
-pdf("figures/Fig4G.pdf", height = 5, width = 7)
-MotifPlot(
-  object = integrated,
-  motifs = unique(as.vector(motif_df$TF[gene_df$TF %in% interest_tf2])),
-  assay = 'peaks'
-)
-dev.off()
+## Figure 4H: immunotherapy response-----------
+library(Seurat)
+library(dplyr)
+library(harmony)
+library(ggplot2)
 
-## Figure 4G: regulatory function of intersection genes------------
-library(cicero)
-library(monocle3)
-library(SeuratWrappers)
+GBM_intergrated_24 <- readRDS("reference/GBM.RNA.integrated.24.rds")
+GBM_intergrated_24_TAM <- subset(GBM_intergrated_24, subset = anno_ident == "Macrophages")
 
-DefaultAssay(integrated) <- "peaks"
-# convert to CellDataSet format and make the cicero object
-integrated.cds <- as.cell_data_set(x = integrated)
-integrated.cicero <- make_cicero_cds(integrated.cds, reduced_coordinates = reducedDims(integrated.cds)$UMAP)
-
-# get the chromosome sizes from the Seurat object
-genome <- seqlengths(BSgenome.Hsapiens.UCSC.hg38)
-genome <- genome[standardChromosomes(BSgenome.Hsapiens.UCSC.hg38)]
-
-# convert chromosome sizes to a dataframe
-genome.df <- data.frame("chr" = names(genome), "length" = genome)
-
-# run cicero
-conns <- run_cicero(integrated.cicero, genomic_coords = genome.df, sample_num = 100)
-ccans <- generate_ccans(conns)
-
-links <- ConnectionsToLinks(conns = conns, ccans = ccans)
-Links(integrated) <- links
-
-# extract gene annotations from EnsDb
-annotations <- GetGRangesFromEnsDb(ensdb = EnsDb.Hsapiens.v86)
-
-# change to UCSC style since the data was mapped to hg38
-seqlevels(annotations) <- paste0('chr', seqlevels(annotations))
-genome(annotations) <- "hg38"
-annotations <- keepStandardChromosomes(annotations, pruning.mode = "coarse")
-
-Annotation(integrated) <- annotations
-
-nupr1_tss <- annotations[annotations$gene_name == "NUPR1"]
-nupr1_tss <- resize(nupr1_tss, width = 1, fix = "start")
-nupr1_promoter_region <- resize(nupr1_tss, width = 4000, fix = "center")
-peaks <- granges(integrated[["peaks"]])
-promoter_peaks_nupr1 <- subsetByOverlaps(peaks, nupr1_promoter_region)
-
-link_start <- GRanges(
-  seqnames = seqnames(links),
-  ranges = IRanges(start = start(links), width = 1)
-)
-link_end <- GRanges(
-  seqnames = seqnames(links),
-  ranges = IRanges(start = end(links), width = 1)
-)
-
-start_hits <- findOverlaps(link_start, promoter_peaks)
-end_hits <- findOverlaps(link_end, promoter_peaks)
-
-linked_idx <- unique(c(queryHits(start_hits), queryHits(end_hits)))
-nupr1_links <- links[linked_idx]
-nupr1_links <- nupr1_links[nupr1_links$score > 0.1]
-nupr1_links
-linked_idx_filtered <- match(nupr1_links, links)
-
-enhancer_peaks <- GRanges()
-for (i in linked_idx_filtered) {
-  this_link <- links[i]
-  
-  s <- GRanges(seqnames = seqnames(this_link),
-               ranges = IRanges(start(this_link), width = 1))
-  e <- GRanges(seqnames = seqnames(this_link),
-               ranges = IRanges(end(this_link), width = 1))
-  
-  if (countOverlaps(s, promoter_peaks) > 0) {
-    enhancer_peaks <- c(enhancer_peaks, e)
-  } else {
-    enhancer_peaks <- c(enhancer_peaks, s)
-  }
+# Define standard workflow (Looks good)
+seurat_workflow <- function(seu){
+  seu <- NormalizeData(seu)
+  seu <- FindVariableFeatures(seu)
+  seu <- ScaleData(seu)
+  seu <- RunPCA(seu, npcs = 50, verbose = FALSE)
+  # Note: Do not run UMAP/Neighbors here if you run Harmony immediately after
+  seu
 }
 
-enhancer_in_peakset_idx <- findOverlaps(enhancer_peaks, peaks)
-enhancer_peak_names <- names(peaks)[subjectHits(enhancer_in_peakset_idx)]
+# Process Query
+GBM_intergrated_24_TAM <- seurat_workflow(GBM_intergrated_24_TAM)
 
-peak_matrix <- GetAssayData(integrated, assay = "peaks", slot = "counts")
-enhancer_matrix <- peak_matrix[enhancer_peak_names, ]
+# Run Harmony to correct patient batch effects in the Query
+GBM_intergrated_24_TAM <- GBM_intergrated_24_TAM %>% 
+  RunHarmony("Pt_number", plot_convergence = FALSE, nclust = 50, max_iter = 10, early_stop = TRUE)
 
-older_cells <- colnames(integrated)[integrated$group == "older Myeloid"]
-younger_cells <- colnames(integrated)[integrated$group == "younger Myeloid"]
+# Calculate Query's own UMAP (based on Harmony)
+GBM_intergrated_24_TAM <- GBM_intergrated_24_TAM %>%
+  FindNeighbors(reduction = "harmony", dims = 1:30) %>%
+  FindClusters(resolution = 0.2) %>% # Increased resolution slightly (0.1 might be too low for large cohorts)
+  RunUMAP(dims = 1:30, reduction = "harmony", reduction.name = "umap.harmony") 
 
-older_avg <- Matrix::rowMeans(enhancer_matrix[, older_cells])
-younger_avg <- Matrix::rowMeans(enhancer_matrix[, younger_cells])
+BMDM <- readRDS("result/BMDM_withXHsample_harmony.rds")
+BMDM <- RunUMAP(BMDM, dims = 1:30, reduction = "pca", return.model = TRUE) 
 
-df <- data.frame(
-  peak = enhancer_peak_names,
-  older = older_avg,
-  younger = younger_avg,
-  log2FC = log2(older_avg + 1e-5) - log2(younger_avg + 1e-5)
+# Find anchors
+anchors <- FindTransferAnchors(
+  reference = BMDM, 
+  query = GBM_intergrated_24_TAM, 
+  dims = 1:30, 
+  reference.reduction = "pca"
 )
 
-df_up_in_older <- df[order(-df$log2FC), ]
-df_up_in_older
-
-motif.enrichment <- FindMotifs(
-  object = integrated,
-  features = enhancer_peak_names
+GBM_intergrated_24_TAM <- MapQuery(
+  anchorset = anchors,
+  query = GBM_intergrated_24_TAM,
+  reference = BMDM,
+  refdata = list(subcluster = "subcluster"),
+  reference.reduction = "pca",
+  reduction.model = "umap"
 )
 
-top_motifs <- motif.enrichment[motif.enrichment$p.adjust < 0.05 & motif.enrichment$fold.enrichment > 1, ]
-intersect(interest_tf2, top_motifs$motif.name)
+SubclusterColor <- c('#ea9994','#f2c396','#9cd2ed','#86c7b4','#a992c0')
+names(SubclusterColor) <- unique(BMDM$subcluster)
 
-unique(as.vector(motif_df$TF[gene_df$TF=="ETV4"]))
-
-motif_matrix <- GetMotifData(integrated)
-etv4_peaks <- rownames(motif_matrix)[which(motif_matrix[,"MA0764.2"] == 1)]
-cebpa_peaks <- rownames(motif_matrix)[which(motif_matrix[,"MA0102.4"] == 1)]
-
-etv4_enhancer_peaks <- intersect(etv4_peaks, enhancer_peak_names)
-etv4_enhancer_gr <- granges(integrated[["peaks"]])[etv4_enhancer_peaks][1:4]
-etv4_enhancer_gr$color <- "forestgreen"
-
-promoter_peaks$color <- "red"
-highlight_region <- c(etv4_enhancer_gr, promoter_peaks_nupr1)
-selected_links <- nupr1_links[c(5,6,7,3)]
-
-coverage_region <- range(selected_links)
-start(coverage_region) <- start(coverage_region)-2000
-end(coverage_region) <- end(coverage_region)+2000
-
-Links(integrated) <- links
-
-integrated_subset <- integrated[,!integrated$group %in% c("younger T Cell","older T Cell","younger Stromal","older Stromal")]
-cov_plot <- CoveragePlot(
-  object = integrated_subset,
-  region = coverage_region,
-  annotation = FALSE,
-  peaks = FALSE,
-  region.highlight = highlight_region,
-  assay.scale = "common",
-  group.by = "group"
-) + scale_fill_manual(values = group_pal)
-
-gene_plot <- AnnotationPlot(
-  object = integrated_subset,
-  region = coverage_region
-)
-
-peak_plot <- PeakPlot(
-  object = integrated_subset,
-  region = coverage_region
-)
-
-Links(integrated_subset) <- links
-link_plot <- LinkPlot(
-  object = integrated_subset,
-  region = coverage_region
-)
-
-expr_plot_nupr1 <- ExpressionPlot(
-  object = integrated_subset,
-  features = "NUPR1",
-  assay = "RNA",
-  group.by = "group"
-) + scale_fill_manual(values = group_pal)
-
-expr_plot_etv4 <- ExpressionPlot(
-  object = integrated_subset,
-  features = "ETV4",
-  assay = "RNA",
-  group.by = "group"
-) + scale_fill_manual(values = group_pal)
-
-expr_plot_cebpa <- ExpressionPlot(
-  object = integrated_subset,
-  features = "CEBPA",
-  assay = "RNA",
-  group.by = "group"
-) + scale_fill_manual(values = group_pal)
-
-combined_expr_plot <- expr_plot_nupr1 + expr_plot_etv4 + expr_plot_cebpa + plot_layout(ncol = 3)
-
-pdf("figures/Fig4H.pdf", height = 6, width = 10)
-CombineTracks(
-  plotlist = list(cov_plot, peak_plot, gene_plot, link_plot),
-  expression.plot = combined_expr_plot,
-  heights = c(6, 1, 1, 1),
-  widths = c(8, 3)
-)
+pdf("figures/Sup_Fig4A_review.pdf", height = 5, width = 5)
+DimPlot(GBM_intergrated_24_TAM, 
+        reduction = "umap.harmony", 
+        group.by = "predicted.subcluster", 
+        cols = SubclusterColor,
+        label = TRUE, label.size = 3) + 
+  ggtitle("Predicted Labels on Query's Structure")
 dev.off()
 
-write.table(net_plot, file = "tables/Fig5A.tsv", quote = F, sep = "\t")
-write.table(top_acts_mat, file = "tables/Fig5B.tsv", quote = F, sep = "\t")
-write.table(integrated@meta.data[,c("grade","celltype")], file = "tables/Fig5C.tsv", quote = F, sep = "\t")
-write.table(integrated@reductions$umap@cell.embeddings, file = "tables/Fig5D.tsv", quote = F, sep = "\t")
-write.table(df_long1, file = "tables/Fig5E.tsv", quote = F, sep = "\t")
-write.table(df_long2, file = "tables/Fig5F.tsv", quote = F, sep = "\t")
+# Save the object
+saveRDS(GBM_intergrated_24_TAM, file = "result/BMDM_neoPD1_treatments.rds")
 
+library(forcats)
+library(ggplot2)
+library(gridExtra)
+GBM_intergrated_24_TAM@meta.data$treatment_3 <- factor(GBM_intergrated_24_TAM@meta.data$treatment_3, levels = c("responder","nonresponder","Rec","Untreated"))
+CellInfo <- GBM_intergrated_24_TAM@meta.data
+P1=CellInfo %>% ggplot(aes(x=treatment_3, fill=fct_rev(predicted.subcluster))) +scale_fill_manual(values = SubclusterColor)+
+  geom_bar(color="black",position = "fill",width = 0.7) +
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(), legend.text = element_text(color="black",size=13,face = "bold"),legend.title = element_text(color="black",size=13,face = "bold"),
+  axis.line = element_line(colour = "black"), axis.text.y = element_text(color="black",size=12),axis.text.x = element_text(color="black",angle = 45,hjust = 1,size=15),
+  axis.text=element_text(size=15, face="bold"), axis.title=element_text(size=15,face="bold"),
+  plot.margin = unit(c(0.2, 0.5,0.2, 0.5),"cm"))+labs(y ="Composition (percentage of cells)", x= NULL)+
+  scale_y_continuous(expand = c(0,0),limits = c(0,1),breaks = c(0,0.20,0.40,0.60,0.80,1),labels = scales::percent)+
+  theme(legend.title = element_blank())
+P1g=ggplotGrob(P1)
+P2=ggplot(CellInfo, aes(predicted.subcluster , fill=predicted.subcluster))+geom_bar(stat="count",colour = "black",width = 0.7)+  scale_fill_manual(values = SubclusterColor)+
+  theme(panel.grid.major = element_blank(), panel.grid.minor = element_blank(),panel.background = element_blank(),
+  axis.line = element_line(colour = "black"), axis.text.y = element_blank(),axis.text.x = element_text(color="black",angle = 45,hjust = 1,size=10),
+  axis.text=element_text(size=6.5, face="bold"), axis.title=element_text(size=15,face="bold"),
+  plot.margin = unit(c(-0.1, 0.5,2.5, -0.5),"cm"))+labs(y ="number of cells", x= NULL)+
+  scale_y_continuous(expand=c(0,0),trans ="log2",limits=c(256,131072),oob =  scales::squish)+coord_flip()+
+  theme(legend.position = "none")
+P2g=ggplotGrob(P2)
+
+pdf("figures/Sup_Fig4B_review.pdf", height = 3, width = 5)
+grid.arrange(grobs=list(P1g,P2g), widths = c(1,0.35),heights=c(0.19,1),layout_matrix = rbind(c(1, NA),c(1,2)))
+dev.off()
+
+GBM_intergrated_24_TAM <- AddModuleScore_UCell(GBM_intergrated_24_TAM, list("SMF"=intersection_refined,
+                                                                            "S2"=BMDM_subcluster_markers), name = NULL)
+
+pdf("figures/Sup_Fig4C_review.pdf", height = 3, width = 6)
+DotPlot(GBM_intergrated_24_TAM, 
+                  features = c(intersection_refined, "SMF"), 
+                  group.by = "treatment_3",
+                  cols = c("lightgrey", "#E64B35"),
+                  dot.scale = 6) + 
+  RotatedAxis() +
+  ggtitle("Refined SMF Signature Genes") +
+  theme(axis.text.x = element_text(size = 9),
+        axis.title = element_blank())
+dev.off()
+
+# 1. Calculate Average Expression
+Idents(GBM_intergrated_24_TAM) <- "treatment_3"
+avg_data <- AverageExpression(GBM_intergrated_24_TAM, 
+                              features = rownames(GBM_intergrated_24_TAM),
+                              assays = "RNA", 
+                              slot = "data")$RNA %>% as.data.frame()
+
+# 2. Prepare Data for Plotting
+plot_data <- avg_exp %>% as.data.frame() %>% 
+  rownames_to_column("gene") %>% 
+  mutate(
+    x_val = log2(responder + 1),
+    y_val = log2(nonresponder + 1),
+    logFC = y_val - x_val,
+    
+    is_target = gene %in% intersection_refined,
+    
+    to_label = ifelse(is_target & logFC > 0, gene, NA) 
+  )
+
+cor_plot <- ggplot(plot_data, aes(x = x_val, y = y_val)) +
+  
+  geom_point(data = subset(plot_data, !is_target), 
+             color = "grey90", size = 1, alpha = 0.3) +
+  
+  geom_abline(slope = 1, intercept = 0, linetype = "solid", color = "grey60") +
+  
+  geom_point(data = subset(plot_data, is_target), 
+             aes(fill = logFC), 
+             shape = 21,        
+             size = 3, 
+             color = "black",   
+             stroke = 0.3) +
+  
+  scale_fill_gradient2(low = "#0072B2", mid = "white", high = "#E64B35", 
+                       midpoint = 0, limits = c(-1, 1), oob = scales::squish) +
+  
+  geom_text_repel(aes(label = to_label), 
+                  size = 3, 
+                  fontface = "bold",
+                  color = "#E64B35",
+                  box.padding = 0.5, 
+                  max.overlaps = 50,
+                  segment.color = "grey50",
+                  min.segment.length = 0) +
+  
+
+  labs(
+    x = "Expression in Responders (log2 CPM)",
+    y = "Expression in Non-Responders (log2 CPM)",
+    title = "Refined SMF Signature",
+    subtitle = "Color indicates bias towards Non-Responders"
+  ) +
+  theme_classic() +
+  theme(
+    plot.title = element_text(hjust = 0.5, face = "bold"),
+    plot.subtitle = element_text(hjust = 0.5, size = 10, color = "grey40"),
+    legend.position = "right",
+    aspect.ratio = 1 
+  ) +
+  coord_cartesian(xlim = c(-0.1, 6), 
+                  ylim = c(-0.1, 6))
+
+pdf("figures/Sup_Fig4D_review.pdf", height = 5, width = 6)
+cor_plot
+dev.off()
+
+# Figure 4K: drug response in SMF-high BMDM population--------------
+BMDM_merged <- readRDS("result/BMDM_merged.rds")
+BMDM_merged$subcluster[BMDM_merged$TAM_subtype=="other TAMs"] <- "other"
+BMDM_merged$subcluster[BMDM_merged$TAM_subtype=="S2 BMDM"] <- "S2"
+BMDM_merged$subcluster[BMDM_merged$subcluster!="S2"] <- "other"
+BMDM_merged$subcluster[BMDM_merged$predicted.subcluster!="S2"] <- "other"
+BMDM_merged$subcluster[BMDM_merged$predicted.subcluster=="S2"] <- "S2"
+table(BMDM_merged$subcluster)
+
+intersection <- read.table("tables/TableS5_refined.tsv", header = T)[,1]
+
+DimPlot(BMDM_merged, group.by = "subcluster", reduction = "tsne")
+
+library(UCell)
+BMDM_merged <-AddModuleScore_UCell(BMDM_merged, list(SMF=intersection), name = NULL)
+FeaturePlot(BMDM_merged, "SMF", max.cutoff = "q90", min.cutoff = "q10", reduction = "tsne")
+
+BMDM$label_SMF <- "Middle"
+sample_list <- unique(BMDM$orig.ident)  
+
+for (sample_id in sample_list) {
+  cells_in_sample <- colnames(BMDM)[BMDM$orig.ident==sample_id]
+  SMF_scores <- BMDM$SMF[cells_in_sample]
+  
+  low_cutoff <- quantile(SMF_scores, 1/3, na.rm = TRUE)
+  high_cutoff <- quantile(SMF_scores, 2/3, na.rm = TRUE)
+  
+  BMDM$label_SMF[cells_in_sample][SMF_scores < low_cutoff] <- "Low"
+  BMDM$label_SMF[cells_in_sample][SMF_scores >= high_cutoff] <- "High"
+}
+
+DimPlot(BMDM, group.by="label_SMF")
+
+saveRDS(BMDM_merged, file = "result/BMDM_merged.rds")
+
+library(beyondcell, lib.loc = "/home/fengqian/miniconda3/envs/beyondcell/lib/R/library")
+
+gs <- GetCollection(PSc)
+#ss <- GetCollection(SSc)
+
+sc <- BMDM_merged
+
+bc <- bcScore(sc, gs, expr.thres = 0.1) 
+#bc <- bcScore(ss, ss, expr.thres = 0.1)
+
+# Run the UMAP reduction. 
+bc <- bcUMAP(bc, pc = 10, k.neighbors = 4, res = 0.2)
+
+bcClusters(bc, UMAP = "beyondcell", idents = "nFeature_RNA", factor.col = FALSE, pt.size = 0.5)
+
+bc@normalized[is.na(bc@normalized)] <- 0
+bc <- bcRecompute(bc, slot = "normalized")
+bc <- bcRegressOut(bc = bc, vars.to.regress = c("nFeature_RNA"))
+
+bcRanks <- function(bc, idents = NULL, extended = TRUE, 
+                    resm.cutoff = c(0.1, 0.9), 
+                    sp.cutoff = c(0.1, 0.4, 0.6, 0.9)) {
+  # Check that bc is a beyondcell object.
+  if (class(bc) != "beyondcell") stop('bc must be a beyondcell object.')
+  # Check idents.
+  if (!is.null(idents)) {
+    if (length(idents) != 1) {
+      stop('Idents must be a single metadata column.')
+    }
+    if (idents %in% colnames(bc@meta.data)) {
+      if (idents %in% names(bc@ranks)) {
+        warning(paste0('$', idents, ' already exists in bc@ranks. ',
+                       'Entry has been overwritten.'))
+      }
+      meta <- bc@meta.data[colnames(bc@normalized), idents, drop = TRUE]
+    } else {
+      stop('Idents not found.')
+    }
+  } else {
+    stop("You must supply the name of a metadata column to group by.")
+  }
+  # Check extended.
+  if (length(extended) != 1 | !is.logical(extended[1])) {
+    stop('extended must be TRUE or FALSE.')
+  }
+  # Check resm.cutoff.
+  if (length(resm.cutoff) != 2 | !is.numeric(resm.cutoff)) {
+    stop('resm.cutoff must be a numeric vector of length 2.')
+  }
+  if (resm.cutoff[2] < resm.cutoff[1]) {
+    warning(paste('Upper residuals\' mean cut-off is smaller than lower', 
+                  'residuals\' mean cut-off. Sorting residuals\' mean cut-offs', 
+                  'in increasing order.'))
+    resm.cutoff <- sort(resm.cutoff, decreasing = FALSE)
+  }
+  # Check sp.cutoff.
+  if (length(sp.cutoff) != 4 | !is.numeric(sp.cutoff)) {
+    stop('sp.cutoff must be a numeric vector of length 4.')
+  }
+  if (any(sp.cutoff < 0 | sp.cutoff > 1)) {
+    stop('sp.cutoff must contain 4 switch point values between 0 and 1.')
+  }
+  sorted.sp.cutoff <- sort(sp.cutoff, decreasing = FALSE)
+  if (!identical(sp.cutoff, sorted.sp.cutoff)) {
+    warning(paste('Sorting switch point cut-offs in increasing order.'))
+    sp.cutoff <- sorted.sp.cutoff
+  }
+  # --- Code ---
+  # Progress bar.
+  pb <- txtProgressBar(min = 0, max = 100, style = 3, file = stderr())
+  bins <- 10
+  # Signatures in bc.
+  sigs <- rownames(bc@normalized)
+  # Cells in bc.
+  cells <- colnames(bc@normalized)
+  # Keep column to group by.
+  meta <- bc@meta.data %>%
+    tibble::rownames_to_column("cells") %>%
+    dplyr::select(cells, all_of(idents)) %>%
+    dplyr::rename(group.var := !!idents) %>%
+    dplyr::mutate(group.var = factor(group.var)) %>%
+    unique()
+  lvls <- levels(meta$group.var)
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 5)
+  # Column to order by.
+  order.col <- paste0("rank.", levels(meta$group.var)[1])
+  # Final column order.
+  if (extended) {
+    cols.additional <- c("median", "sd", "variance", "min", "max", "prop.na")
+  } else {
+    cols.additional <- NULL
+  }
+  cols.stats <- c("rank", "switch.point", "mean", cols.additional, 
+                  "residuals.mean", "group")
+  cols.stats.level <- tidyr::expand_grid(lvls, cols.stats) %>%
+    dplyr::mutate(col.name = paste(cols.stats, lvls, sep = ".")) %>%
+    dplyr::pull(col.name)
+  # Get switch points.
+  sp <- data.frame(switch.point = bc@switch.point) %>%
+    tibble::rownames_to_column("IDs")
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 10)
+  # Compute long normalized BCS.
+  normalized.long <- bc@normalized %>%
+    t() %>%
+    as.data.frame() %>%
+    tibble::rownames_to_column("cells") %>%
+    tidyr::pivot_longer(cols = all_of(sigs), names_to = "IDs", 
+                        values_to = "enrichment", values_drop_na = FALSE)
+  # Add grouping information and switch point.
+  normalized.long <- normalized.long %>%
+    dplyr::inner_join(sp, by = "IDs") %>%
+    dplyr::inner_join(meta, by = "cells")
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 25)
+  # Compute mean BCS and residual's mean per signature.
+  stats.long <- normalized.long %>%
+    dplyr::group_by(IDs) %>%
+    dplyr::mutate(mean = round(mean(enrichment, na.rm = TRUE), digits = 2)) %>%
+    dplyr::ungroup() %>%
+    dplyr::mutate(resid = enrichment - mean) %>%
+    dplyr::group_by(IDs, group.var) %>%
+    dplyr::mutate(residuals.mean = round(mean(resid, na.rm = TRUE), digits = 2)) %>%
+    dplyr::ungroup()
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 45)
+  # If extended == TRUE, compute the median, standard deviation, variance, min, 
+  # max and proportion of NaNs per signature.
+  if (extended) {
+    stats.long <- stats.long %>%
+      dplyr::group_by(IDs) %>%
+      dplyr::mutate(median = round(median(enrichment, na.rm = TRUE), digits = 2),
+                    sd = round(sd(enrichment, na.rm = TRUE), digits = 2),
+                    variance = round(var(enrichment, na.rm = TRUE), digits = 2),
+                    min = round(min(enrichment, na.rm = TRUE), digits = 2),
+                    max = round(max(enrichment, na.rm = TRUE), digits = 2),
+                    prop.na = round(sum(is.na(enrichment))/length(cells), 
+                                    digits = 2)) %>%
+      dplyr::ungroup()
+  }
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 50)
+  # Residual's deciles.
+  res.decil <- stats.long %>%
+    dplyr::group_by(group.var) %>%
+    dplyr::group_modify(~as.data.frame(t(quantile(.$residuals.mean, resm.cutoff, 
+                                                  na.rm = TRUE)))) %>%
+    dplyr::ungroup()
+  colnames(res.decil)[2:3] <- c("Pmin", "Pmax")
+  stats.long <- stats.long %>%
+    dplyr::select(-cells, -enrichment) %>%
+    unique() %>%
+    dplyr::inner_join(res.decil, by = "group.var")
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 75)
+  # Group annotation.
+  stats.long.annotated <- stats.long %>%
+    dplyr::mutate(
+      group = dplyr::case_when(switch.point < sp.cutoff[1] & 
+                                 residuals.mean > Pmax ~ 
+                                 "TOP-HighSensitivity",
+                               switch.point > sp.cutoff[4] & 
+                                 residuals.mean < Pmin ~ 
+                                 "TOP-LowSensitivity",
+                               switch.point > sp.cutoff[2] & 
+                                 switch.point < sp.cutoff[3] & 
+                                 residuals.mean < Pmin ~ 
+                                 "TOP-Differential-LowSensitivity",
+                               switch.point > sp.cutoff[2] &
+                                 switch.point < sp.cutoff[3] & 
+                                 residuals.mean > Pmax ~ 
+                                 "TOP-Differential-HighSensitivity",
+                               TRUE ~ NA_character_))
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 80)
+  # Order.
+  rank <- stats.long.annotated %>%
+    dplyr::mutate(in.range = switch.point > sp.cutoff[2] & 
+                    switch.point < sp.cutoff[3],
+                  sp.rank = switch.point * as.numeric(in.range)) %>%
+    dplyr::select(IDs, group.var, sp.rank, residuals.mean, in.range) %>%
+    unique() %>%
+    dplyr::group_split(group.var)
+  rank <- lapply(rank, FUN = function(x) {
+    dt <- data.table::as.data.table(x)
+    dt[, rank := data.table::frank(dt, -sp.rank, -residuals.mean, 
+                                   ties.method = "dense")]
+    return(dt)
+  }) %>%
+    dplyr::bind_rows() %>%
+    dplyr::mutate(rank = dplyr::if_else(in.range, rank, NA_integer_)) %>%
+    dplyr::select(IDs, group.var, rank) %>%
+    unique()
+  stats.long.ranked <- stats.long.annotated %>%
+    dplyr::inner_join(rank, by = c("IDs", "group.var"))
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 85)
+  # Pivot wider
+  final.stats <- stats.long.ranked %>%
+    dplyr::select(IDs, group.var, all_of(cols.stats)) %>%
+    unique() %>%
+    tidyr::pivot_wider(names_from = group.var, values_from = all_of(cols.stats),
+                       names_sep = ".")
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 90)
+  # Add Drug name and MoA to final.stats.
+  info <- drugInfo$IDs %>%
+    dplyr::filter(IDs %in% final.stats$IDs) %>%
+    dplyr::select(IDs, preferred.drug.names, studies) %>%
+    dplyr::left_join(y = drugInfo$MoAs[, c("IDs", "MoAs")], by = "IDs",
+                     relationship = "many-to-many") %>%
+    dplyr::left_join(y = drugInfo$Targets, by = "IDs",
+                     relationship = "many-to-many") %>%
+    dplyr::left_join(y = drugInfo$Synonyms, by = "IDs",
+                     relationship = "many-to-many")
+  if (dim(info)[1] > 0) {
+    info <- aggregate(.~ IDs, data = info, na.action = NULL, FUN = function(x) {
+      paste(na.omit(unique(x)), collapse = "; ")
+    })
+    cols.druginfo <- c("drugs", "preferred.drug.names", "MoAs", "targets", 
+                       "studies")
+  } else {
+    info <- data.frame(IDs = rownames(bc@normalized))
+    cols.druginfo <- NULL
+  }
+  final.stats <- final.stats %>%
+    dplyr::left_join(info, by = "IDs") %>%
+    tibble::column_to_rownames("IDs") %>%
+    unique()
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 95)
+  # Order by rank and reorder columns.
+  final.stats <- final.stats[order(final.stats[, order.col], decreasing = FALSE),
+                             c(cols.druginfo, cols.stats.level)]
+  # Add to beyondcell object.
+  bc@ranks[[idents]] <- final.stats
+  Sys.sleep(0.1)
+  setTxtProgressBar(pb, value = 100)
+  return(bc)
+}
+
+bc <- bcRanks(bc, idents = "subcluster")
+saveRDS(bc, file = "result/drug_prediction_bc_multifocal.rds")
+
+# Explore the statistics table.
+df_cor <- cor(t(bc@data), bc@meta.data$SMF)
+colnames(df_cor) <- "cor"
+df_cor <- df_cor %>% 
+  as.data.frame() %>% 
+  rownames_to_column("drugs") %>% 
+  arrange(desc(cor))
+head(df_cor)
+
+# Step 1: Extract data from bc@ranks
+df <- bc@ranks$subcluster
+
+df <- df %>%
+  dplyr::select(
+    residuals.mean = residuals.mean.S2,
+    switch.point = switch.point.S2,
+    group = group.S2,
+    drug = preferred.drug.names
+  ) %>%
+  tibble::rownames_to_column("sig_id") %>%
+  dplyr::mutate(
+    label = paste0(drug, " (", sig_id, ")")
+  )
+
+# Step 2: Label only top 5 from each group
+df <- df %>%
+  arrange(group, desc(abs(residuals.mean))) %>%
+  group_by(group) %>%
+  mutate(label_show = ifelse(
+    (group == "TOP-Differential-HighSensitivity" & row_number() <= 10) | 
+      (group == "TOP-Differential-LowSensitivity" & row_number() <= 3),
+    label, 
+    NA
+  )) %>%
+  ungroup()
+
+# Step 3: Define color map
+color_map <- c(
+  "TOP-Differential-HighSensitivity" = "#F4A300",
+  "TOP-Differential-LowSensitivity" = "#B086CC"
+)
+
+# Step 4: Set cutoffs
+x_cutoff <- quantile(df$residuals.mean, probs = c(0.1, 0.9), na.rm = TRUE)
+y_cutoff <- c(0.1, 0.4, 0.6, 0.9)
+
+# Step 5: Plot
+pdf("figures/Fig4I.pdf", height = 5, width = 8)
+ggplot(df, aes(x = residuals.mean, y = switch.point)) +
+  geom_point(aes(fill = group, color = group), shape = 21, size = 2, alpha = 0.8) +
+  scale_fill_manual(values = color_map, na.value = "lightgrey") +
+  scale_color_manual(values = color_map, na.value = "lightgrey", guide = "none") +
+  geom_vline(xintercept = x_cutoff, linetype = "dotted") +
+  geom_hline(yintercept = y_cutoff, linetype = "dotted") +
+  geom_text_repel(
+    aes(label = label_show),
+    size = 3,
+    color = "black",
+    nudge_x = ifelse(df$residuals.mean >= 0, 0.5, -0.5),
+    direction = "y",      
+    hjust = 0.5,           
+    segment.size = 0.5,   
+    segment.alpha = 0.6,  
+    min.segment.length = 0, 
+    box.padding = 0.5,  
+    point.padding = 0.3,  
+    force = 2,       
+    max.time = 2,      
+    max.iter = 20000,  
+    max.overlaps = Inf   
+  ) +
+  theme_classic() +
+  labs(
+    title = "subcluster = High SMF",
+    x = "Residuals' Mean",
+    y = "Switch Point",
+    fill = "Drug Group",
+    caption = paste0("x cut-offs: first and last deciles; y cut-offs: ", paste(y_cutoff, collapse = ", "))
+  ) +
+  theme(
+    plot.title = element_text(hjust = 0.5),
+    legend.position = "right"
+  )
+dev.off()
+
+library(patchwork)
+FindDrugs(bc, "CEPHAELINE")
+FindDrugs(bc, "EMETINE")
+FindDrugs(bc, "CERAMIDE")
+
+# UMAP with time points.
+bcClusters(bc, UMAP = "beyondcell", idents = "label_SMF", pt.size = 0.5)
+
+bcSignatures(bc, UMAP = "beyondcell", signatures = list(values = "sig-17814"), pt.size = 1.5)
+
+pdf("figures/Sup_Fig5D.pdf")
+bcHistogram(bc, signatures = "sig-7064", idents = "subcluster")
+bcHistogram(bc, signatures = "sig-7353", idents = "label_SMF")
+bcHistogram(bc, signatures = "sig-20501", idents = "label_SMF")
+dev.off()
+
+interest_mat <- df %>% 
+  arrange(desc(residuals.mean)) %>% 
+  filter(group=="TOP-Differential-HighSensitivity" & 
+           switch.point < 0.6 & switch.point > 0.4 & 
+           residuals.mean > x_cutoff[2] & sig_id %in% df_cor$drugs[df_cor$cor > 0.3]) %>% 
+  dplyr::select(sig_id, drug)
+View(interest_mat)
+
+GBM_intergrated_24_TAM$subcluster_named <- GBM_intergrated_24_TAM$predicted.subcluster
+GBM_intergrated_24_TAM$subcluster_named[GBM_intergrated_24_TAM$predicted.subcluster=="S0"] <- "FRMD4A+ MAC1"
+GBM_intergrated_24_TAM$subcluster_named[GBM_intergrated_24_TAM$predicted.subcluster=="S3"] <- "HLA-hi MAC2"
+GBM_intergrated_24_TAM$subcluster_named[GBM_intergrated_24_TAM$predicted.subcluster=="S2"] <- "NUPR1+ MDSC"
+GBM_intergrated_24_TAM$subcluster_named[GBM_intergrated_24_TAM$predicted.subcluster=="S1"] <- "VCAN+ MDSC"
+GBM_intergrated_24_TAM$subcluster_named[GBM_intergrated_24_TAM$predicted.subcluster=="S4"] <- "CXCL8+ MDSC"
+
+write.table(clinical_data_TCGA[,c("patient","sample","SMF","group","OS_time", "OS_status")], file = "tables/Fig4B.tsv", quote = F, sep = ",")
+write.table(clinical_data, file = "tables/Fig4C.tsv", quote = F, sep = ",")
+write.table(merged_data_cibersort[,c("patient","sample","SMF","group","OS_time", "OS_status","S2_cibersort_group")], file = "tables/Fig4D.tsv", quote = F, sep = ",")
+write.table(final_data, file = "tables/Fig4E.tsv", quote = F, sep = ",")
+write.table(GBM_intergrated_24_TAM@meta.data[,c("diagnosis","PD1","treatment_3","subcluster_named")], file = "tables/Fig4F.tsv", quote = F, sep = "\t")
+write.table(plot_data, file = "tables/Fig4G.tsv", quote = F, sep = "\t")
+write.table(df, file = "tables/Fig4H.tsv", quote = F, sep = "\t")
+write.table(vlnplot$data, file = "tables/Fig4I.tsv", quote = F, sep = "\t")
 
 
