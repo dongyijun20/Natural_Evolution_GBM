@@ -374,12 +374,14 @@ df_scores <- malignant@meta.data %>%
   ) %>%
   dplyr::mutate(lesion = factor(lesion, levels = c("1", "2")))
 
-n_pairs <- dplyr::n_distinct(df_scores$patient)
+df_wide <- df_scores %>%
+  tidyr::pivot_wider(id_cols = patient, names_from = lesion, values_from = c(MES, NES))
 
-fmt_p <- function(p) {
-  if (is.na(p)) return("p = NA")
-  if (p < 0.001) "p < 0.001" else sprintf("p = %.3g", p)
-}
+p_t_mes <- t.test(df_wide$MES_1, df_wide$MES_2, paired = TRUE)$p.value
+p_wilcox_mes <- suppressWarnings(wilcox.test(df_wide$MES_1, df_wide$MES_2, paired = TRUE)$p.value)
+
+p_t_nes <- t.test(df_wide$NES_1, df_wide$NES_2, paired = TRUE)$p.value
+p_wilcox_nes <- suppressWarnings(wilcox.test(df_wide$NES_1, df_wide$NES_2, paired = TRUE)$p.value)
 
 if (!requireNamespace("lmerTest", quietly = TRUE)) {
   stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
@@ -387,12 +389,18 @@ if (!requireNamespace("lmerTest", quietly = TRUE)) {
 meta_ll <- malignant@meta.data
 meta_ll$patient <- sub("_.*", "", as.character(meta_ll$sample))
 meta_ll$lesion <- factor(sub(".*_", "", as.character(meta_ll$sample)), levels = c("1", "2"))
+
 lmm_mes <- lmerTest::lmer(AUC_MES ~ lesion + (1|patient), data = meta_ll)
 lmm_nes <- lmerTest::lmer(AUC_NES ~ lesion + (1|patient), data = meta_ll)
+
 p_lmm_mes <- summary(lmm_mes)$coefficients["lesion2", "Pr(>|t|)"]
 p_lmm_nes <- summary(lmm_nes)$coefficients["lesion2", "Pr(>|t|)"]
-caption_mes <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_mes))
-caption_nes <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_nes))
+
+caption_mes <- sprintf("n=%d pairs\nLMM %s\nPaired t %s | Wilcoxon %s", 
+                       n_pairs, fmt_p(p_lmm_mes), fmt_p(p_t_mes), fmt_p(p_wilcox_mes))
+
+caption_nes <- sprintf("n=%d pairs\nLMM %s\nPaired t %s | Wilcoxon %s", 
+                       n_pairs, fmt_p(p_lmm_nes), fmt_p(p_t_nes), fmt_p(p_wilcox_nes))
 
 p_mes <- ggpubr::ggboxplot(df_plot, x = "sample", y = "MES", color = "sample", fill = "sample", palette = SampleColor) +
   labs(x = NULL, y = "MES score", subtitle = caption_mes) +
@@ -428,19 +436,120 @@ pdf("figures/Sup_Fig1C.pdf", width = 20, height = 5)
 FeaturePlot(malignant, features = c("AUC_NES", "AUC_MES"), max.cutoff = "q90", min.cutoff = "q10", blend = T)
 dev.off()
 
-## Figure Sup_Fig1E: stem-like possibilities in tumor cells, defined by cytoTRACE2----------
-library(CytoTRACE2) 
+## Figure Sup_Fig1E: stem-like possibilities in tumor cells----------
+library(Seurat)
+library(UCell)
+library(dplyr)
+library(tidyr)
+library(ggpubr)
+library(patchwork)
+library(lme4) # 必须加载 lme4 以使用 GLMM
 
-cytotrace2_result <- cytotrace2(malignant, is_seurat = T, species = "human")
+# ====================================================================
+# 1 & 2. 依然使用 UCell 评分 (消除文库大小假阳性)
+# ====================================================================
+# 假设 sig_list 已经按照前面的逻辑建好了
+malignant <- AddModuleScore_UCell(malignant, features = sig_list, name = "_UCell")
+meta <- malignant@meta.data
 
-source("code/scRNA/modified_cytoTRACE2.R")
+# ====================================================================
+# 3. 动态卡点 (Top 25%) 与严格互斥分类
+# ====================================================================
+top_pct <- 0.25 
+stem_cut <- quantile(meta$StemAssoc_UCell, 1 - top_pct)
+diff_cut <- quantile(meta$Diff_UCell, 1 - top_pct)
 
-annotation_subtype <- data.frame(Phenotype = as.factor(malignant@meta.data$subtype)) %>% set_rownames(., colnames(malignant))
-annotation_grade <- data.frame(Phenotype = malignant@meta.data$grade) %>% set_rownames(., colnames(malignant))
+meta$is_stem <- meta$StemAssoc_UCell > stem_cut
+meta$is_diff <- meta$Diff_UCell > diff_cut
 
-pdf("figures/Sup_Fig1E.pdf", height = 4, width = 4)
-plotData_boxplot(cytotrace2_result, annotation = annotation_subtype, cols = SubtypeColor)
-plotData_boxplot(cytotrace2_result, annotation = annotation_grade, cols = GradeColor, add_sig = T)
+# 定义互斥的逻辑列 (用于后续 GLMM 回归)
+meta$is_stem_only <- meta$is_stem & !meta$is_diff
+meta$is_diff_only <- meta$is_diff & !meta$is_stem
+meta$is_both      <- meta$is_stem & meta$is_diff
+
+# 计算用于画图的比例数据
+df_plot <- meta %>%
+  mutate(patient = sub("(.*)\\_.*","\\1",sample)) %>% 
+  dplyr::group_by(patient, grade) %>%
+  summarise(
+    total_cells = n(),
+    Stem_associated = sum(is_stem_only) / total_cells * 100,
+    Differentiated  = sum(is_diff_only) / total_cells * 100,
+    Stem_and_Diff   = sum(is_both) / total_cells * 100,
+    .groups = "drop"
+  )
+
+# 保留成对样本
+patients_with_pairs <- df_plot %>%
+  dplyr::group_by(patient) %>%
+  filter(n() == 2) %>%
+  pull(patient) %>%
+  unique()
+
+df_plot <- df_plot %>% filter(patient %in% patients_with_pairs)
+df_plot$grade <- factor(df_plot$grade, levels = c("older", "younger"))
+
+# ====================================================================
+# 4. 统计学核武器：GLMM (二项分布混合模型) 计算真正的 P 值
+# ====================================================================
+# 确保 grade 是因子，并设置 older 为对照组
+meta_ll <- meta %>% mutate(patient = sub("(.*)\\_.*","\\1",sample)) %>%
+  filter(patient %in% patients_with_pairs)
+meta_ll$grade <- factor(meta_ll$grade, levels = c("older", "younger"))
+
+# 使用 glmer (binomial) 拟合模型 (加入 bobyqa 优化器防报错)
+glmer_control <- glmerControl(optimizer = "bobyqa", optCtrl = list(maxfun = 100000))
+
+m_stem <- glmer(is_stem_only ~ grade + (1|patient), data = meta_ll, family = binomial, control = glmer_control)
+m_diff <- glmer(is_diff_only ~ grade + (1|patient), data = meta_ll, family = binomial, control = glmer_control)
+m_both <- glmer(is_both      ~ grade + (1|patient), data = meta_ll, family = binomial, control = glmer_control)
+
+# 提取 P 值
+p_stem <- summary(m_stem)$coefficients["gradeyounger", "Pr(>|z|)"]
+p_diff <- summary(m_diff)$coefficients["gradeyounger", "Pr(>|z|)"]
+p_both <- summary(m_both)$coefficients["gradeyounger", "Pr(>|z|)"]
+
+# 复用之前定义好的格式化函数防零截断
+fmt_p <- function(p) {
+  if (is.na(p)) return("p = NA")
+  if (p == 0) return("p < 2.2e-16")
+  if (p < 0.001) return(sprintf("p = %.2e", p))
+  sprintf("p = %.3g", p)
+}
+
+# ====================================================================
+# 5. 绘图 (隐藏 T-test，直接将 GLMM P值写在图顶端)
+# ====================================================================
+plot_colors <- c("older" = "#E69F00", "younger" = "#0072B2")
+
+p1 <- ggpaired(df_plot, x = "grade", y = "Stem_associated", id = "patient", 
+               color = "grade", fill = "white", palette = plot_colors,
+               line.color = "black", line.size = 0.4, point.size = 2.5,
+               ylab = "percent. of stem-associated (%)", xlab = FALSE) +
+  labs(subtitle = sprintf("GLMM %s", fmt_p(p_stem))) + # 添加 GLMM P值
+  theme_classic(base_size = 12) + 
+  theme(legend.position = "none", axis.text.x = element_text(color = "black"), plot.subtitle = element_text(hjust = 0.5, face = "bold"))
+
+p2 <- ggpaired(df_plot, x = "grade", y = "Differentiated", id = "patient", 
+               color = "grade", fill = "white", palette = plot_colors,
+               line.color = "black", line.size = 0.4, point.size = 2.5,
+               ylab = "percent. of differentiated-like (%)", xlab = FALSE) +
+  labs(subtitle = sprintf("GLMM %s", fmt_p(p_diff))) +
+  theme_classic(base_size = 12) + 
+  theme(legend.position = "none", axis.text.x = element_text(color = "black"), plot.subtitle = element_text(hjust = 0.5, face = "bold"))
+
+p3 <- ggpaired(df_plot, x = "grade", y = "Stem_and_Diff", id = "patient", 
+               color = "grade", fill = "white", palette = plot_colors,
+               line.color = "black", line.size = 0.4, point.size = 2.5,
+               ylab = "percent. of stem-associated &\ndifferentiated-like (%)", xlab = FALSE) +
+  labs(subtitle = sprintf("GLMM %s", fmt_p(p_both))) +
+  theme_classic(base_size = 12) + 
+  theme(legend.position = "none", axis.text.x = element_text(color = "black"), plot.subtitle = element_text(hjust = 0.5, face = "bold"))
+
+final_plot <- p1 | p2 | p3
+
+pdf("figures/Sup_Fig1D_review.pdf", width = 9, height = 4.5)
+print(final_plot)
 dev.off()
 
 ## Figure 1H: tumor cell evolution analysis--------

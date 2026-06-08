@@ -986,6 +986,190 @@ if (file.exists("data/CnT/NC1.bw")) {
   message("data/CnT/NC1.bw not found, skipping Cut&Tag figure.")
 }
 
+## Figure 5H review: bulk ATAC accessibility around CEBPA Cut&Tag peaks---------
+if (Sys.which("bamCoverage") == "" || Sys.which("computeMatrix") == "") {
+  warning("deepTools not found; skipping Fig5H_review and Sup_Fig5H_review.")
+} else {
+  peak_path <- "data/CnT/NC1_peaks.narrowPeak"
+  peak_bed <- "tmp/NC1_top20k_peaks.bed"
+  erastin_bam <- "data/bulk_ATAC/Cleandata/Erastin/Erastin.bam"
+  nc_bam <- "data/bulk_ATAC/Cleandata/NC/NC.bam"
+  erastin_bw <- "tmp/Erastin.RPKM.bw"
+  nc_bw <- "tmp/NC.RPKM.bw"
+  matrix_path <- "tmp/CnT_peak_bulkATAC_profile.matrix.gz"
+  
+  up_bp <- 1500
+  down_bp <- 1500
+  bin_size <- 10
+  center_window <- 250
+  n_top_peaks <- 20000
+  
+  erastin_col <- "#D95F02"
+  nc_col <- "#1B9E77"
+  delta_col <- "#7B3294"
+  
+  dir.create("tmp", showWarnings = FALSE)
+  dir.create("figures", showWarnings = FALSE)
+  
+  peak_tbl <- read.delim(peak_path, header = FALSE, stringsAsFactors = FALSE) %>%
+    transmute(
+      chr = ifelse(grepl("^chr", V1), V1, paste0("chr", V1)),
+      start = V2,
+      end = V3,
+      score = V7
+    ) %>%
+    arrange(desc(score)) %>%
+    slice_head(n = n_top_peaks)
+  
+  write.table(
+    peak_tbl[, c("chr", "start", "end")],
+    file = peak_bed,
+    sep = "\t",
+    quote = FALSE,
+    row.names = FALSE,
+    col.names = FALSE
+  )
+  
+  if (!file.exists(erastin_bw)) {
+    cmd <- sprintf(
+      "bamCoverage -b %s -o %s --normalizeUsing RPKM --binSize 25 -p 8",
+      shQuote(erastin_bam),
+      shQuote(erastin_bw)
+    )
+    stopifnot(system(cmd) == 0)
+  }
+  
+  if (!file.exists(nc_bw)) {
+    cmd <- sprintf(
+      "bamCoverage -b %s -o %s --normalizeUsing RPKM --binSize 25 -p 8",
+      shQuote(nc_bam),
+      shQuote(nc_bw)
+    )
+    stopifnot(system(cmd) == 0)
+  }
+  
+  cmd <- sprintf(
+    paste(
+      "computeMatrix reference-point --referencePoint center",
+      "-R %s -S %s %s -a %d -b %d --skipZeros -p 8 -o %s"
+    ),
+    shQuote(peak_bed),
+    shQuote(erastin_bw),
+    shQuote(nc_bw),
+    up_bp,
+    down_bp,
+    shQuote(matrix_path)
+  )
+  stopifnot(system(cmd) == 0)
+  
+  mat_df <- read.table(
+    gzfile(matrix_path),
+    sep = "\t",
+    header = FALSE,
+    skip = 1,
+    check.names = FALSE
+  )
+  
+  signal_mat <- as.matrix(mat_df[, -(1:6), drop = FALSE])
+  n_bins <- (up_bp + down_bp) / bin_size
+  erastin_mat <- signal_mat[, seq_len(n_bins), drop = FALSE]
+  nc_mat <- signal_mat[, n_bins + seq_len(n_bins), drop = FALSE]
+  
+  x <- seq(
+    from = -up_bp + bin_size / 2,
+    by = bin_size,
+    length.out = n_bins
+  )
+  
+  overlay_df <- bind_rows(
+    data.frame(position = x, signal = colMeans(erastin_mat), group = "Erastin"),
+    data.frame(position = x, signal = colMeans(nc_mat), group = "NC")
+  )
+  
+  delta_mat <- erastin_mat - nc_mat
+  mean_delta <- colMeans(delta_mat)
+  
+  bootstrap_ci <- function(xmat, n_boot = 80, seed = 123) {
+    set.seed(seed)
+    boot_mean <- vapply(
+      seq_len(n_boot),
+      function(i) {
+        idx <- sample(seq_len(nrow(xmat)), replace = TRUE)
+        colMeans(xmat[idx, , drop = FALSE])
+      },
+      numeric(ncol(xmat))
+    )
+    data.frame(
+      lower = apply(boot_mean, 1, quantile, probs = 0.025),
+      upper = apply(boot_mean, 1, quantile, probs = 0.975)
+    )
+  }
+  
+  ci_df <- bootstrap_ci(delta_mat)
+  delta_df <- data.frame(
+    position = x,
+    delta = mean_delta,
+    lower = ci_df$lower,
+    upper = ci_df$upper
+  )
+  
+  center_idx <- abs(x) <= center_window
+  erastin_center <- rowMeans(erastin_mat[, center_idx, drop = FALSE])
+  nc_center <- rowMeans(nc_mat[, center_idx, drop = FALSE])
+  median_log2fc <- median(log2((erastin_center + 1e-6) / (nc_center + 1e-6)))
+  wilcox_p <- wilcox.test(erastin_center, nc_center, paired = TRUE, alternative = "greater")$p.value
+  
+  p_delta <- ggplot(delta_df, aes(x = position, y = delta)) +
+    geom_ribbon(aes(ymin = lower, ymax = upper), fill = delta_col, alpha = 0.16) +
+    geom_area(data = subset(delta_df, delta >= 0), fill = erastin_col, alpha = 0.24) +
+    geom_area(data = subset(delta_df, delta < 0), fill = nc_col, alpha = 0.24) +
+    geom_line(color = delta_col, linewidth = 0.9) +
+    geom_hline(yintercept = 0, linetype = "dashed", color = "grey50") +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    annotate(
+      "text",
+      x = min(delta_df$position),
+      y = max(delta_df$upper, na.rm = TRUE),
+      hjust = 0, vjust = 1.1, size = 3.1,
+      label = paste0(
+        "Erastin - NC\n",
+        "median log2FC (center ±", center_window, " bp) = ", sprintf("%.3f", median_log2fc), "\n",
+        "Wilcoxon p = ", format(wilcox_p, scientific = TRUE, digits = 2)
+      )
+    ) +
+    theme_classic(base_size = 11) +
+    labs(
+      title = "Bulk ATAC accessibility shift at CEBPA Cut&Tag peaks",
+      x = "Distance to CEBPA peak center (bp)",
+      y = "Delta ATAC signal"
+    ) +
+    theme(plot.title = element_text(hjust = 0.5, face = "bold"))
+  
+  p_overlay <- ggplot(overlay_df, aes(x = position, y = signal, color = group)) +
+    geom_line(linewidth = 1) +
+    geom_vline(xintercept = 0, linetype = "dashed", color = "grey50") +
+    scale_color_manual(values = c("Erastin" = erastin_col, "NC" = nc_col)) +
+    theme_classic(base_size = 11) +
+    labs(
+      title = "Bulk ATAC metaprofile around CEBPA Cut&Tag peaks",
+      x = "Distance to CEBPA peak center (bp)",
+      y = "ATAC signal (RPKM)",
+      color = NULL
+    ) +
+    theme(
+      plot.title = element_text(hjust = 0.5, face = "bold"),
+      legend.position = c(0.82, 0.9)
+    )
+  
+  pdf("figures/Fig5H_review.pdf", height = 3.4, width = 4.0)
+  print(p_delta)
+  dev.off()
+  
+  pdf("figures/Sup_Fig5H_review.pdf", height = 3.4, width = 4.0)
+  print(p_overlay)
+  dev.off()
+}
+
 write.table(net_plot, file = "tables/Fig5A.tsv", quote = F, sep = "\t")
 write.table(top_acts_mat, file = "tables/Fig5B.tsv", quote = F, sep = "\t")
 write.table(integrated@meta.data[,c("grade","celltype")], file = "tables/Fig5C.tsv", quote = F, sep = "\t")

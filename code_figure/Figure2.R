@@ -63,6 +63,7 @@ library(tidyr)
 library(ggplot2)
 library(ggpubr)
 library(RColorBrewer)
+library(UCell)
 # 10 samples including XH01 (avoid broken SampleColor.rds)
 SampleColor <- brewer.pal(10, 'Paired')[c(2,1,4,3,6,5,8,7,10,9)]
 names(SampleColor) <- c("NJ02_1","NJ02_2","TT01_1","TT01_2","TT02_1","TT02_2","NJ01_1","NJ01_2","XH01_1","XH01_2")
@@ -90,10 +91,21 @@ df_myeloid_scores <- myeloid@meta.data %>%
 
 fmt_p <- function(p) {
   if (is.na(p)) return("p = NA")
-  if (p < 0.001) "p < 0.001" else sprintf("p = %.3g", p)
+  if (p == 0) return("p < 2.2e-16")
+  if (p < 0.001) return(sprintf("p = %.2e", p))
+  sprintf("p = %.3g", p)
 }
 
 n_pairs <- dplyr::n_distinct(df_myeloid_scores$patient)
+
+df_wide_myeloid <- df_myeloid_scores %>%
+  tidyr::pivot_wider(id_cols = patient, names_from = lesion, values_from = c(BMDM, MG))
+
+p_t_bmdm <- t.test(df_wide_myeloid$BMDM_1, df_wide_myeloid$BMDM_2, paired = TRUE)$p.value
+p_wilcox_bmdm <- suppressWarnings(wilcox.test(df_wide_myeloid$BMDM_1, df_wide_myeloid$BMDM_2, paired = TRUE)$p.value)
+
+p_t_mg <- t.test(df_wide_myeloid$MG_1, df_wide_myeloid$MG_2, paired = TRUE)$p.value
+p_wilcox_mg <- suppressWarnings(wilcox.test(df_wide_myeloid$MG_1, df_wide_myeloid$MG_2, paired = TRUE)$p.value)
 
 if (!requireNamespace("lmerTest", quietly = TRUE)) {
   stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
@@ -105,10 +117,13 @@ lmm_bmdm <- lmerTest::lmer(BMDM ~ lesion + (1|patient), data = meta_ll)
 lmm_mg   <- lmerTest::lmer(MG ~ lesion + (1|patient), data = meta_ll)
 p_lmm_bmdm <- summary(lmm_bmdm)$coefficients["lesion2", "Pr(>|t|)"]
 p_lmm_mg   <- summary(lmm_mg)$coefficients["lesion2", "Pr(>|t|)"]
-caption_BMDM <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_bmdm))
-caption_MG   <- sprintf("n=%d pairs; LMM %s", n_pairs, fmt_p(p_lmm_mg))
 
-pdf("figures/Fig2B_review.pdf", height = 4, width = 5)
+caption_BMDM <- sprintf("n=%d pairs\nLMM %s\nPaired t %s | Wilcoxon %s", 
+                        n_pairs, fmt_p(p_lmm_bmdm), fmt_p(p_t_bmdm), fmt_p(p_wilcox_bmdm))
+caption_MG   <- sprintf("n=%d pairs\nLMM %s\nPaired t %s | Wilcoxon %s", 
+                        n_pairs, fmt_p(p_lmm_mg), fmt_p(p_t_mg), fmt_p(p_wilcox_mg))
+
+pdf("figures/Fig2B_review.pdf", height = 4.5, width = 5) # height稍微加点，留足三行字的排版空间
 ggboxplot(df_BMDM, x = "sample", y = "BMDM", color = "sample", fill = "sample", palette = SampleColor) +
   ylab("BMDM score") +
   labs(subtitle = caption_BMDM) +
@@ -117,7 +132,7 @@ ggboxplot(df_BMDM, x = "sample", y = "BMDM", color = "sample", fill = "sample", 
         axis.text.y = element_text(colour = "black"), legend.position = "none", plot.subtitle = element_text(size = 9, hjust = 0.5))
 dev.off()
 
-pdf("figures/Sup_Fig2B_review.pdf", height = 4, width = 5)
+pdf("figures/Sup_Fig2B_review.pdf", height = 4.5, width = 5)
 ggboxplot(df_MG, x = "sample", y = "MG", color = "sample", fill = "sample", palette = SampleColor) +
   ylab("MG score") +
   labs(subtitle = caption_MG) +
@@ -254,7 +269,15 @@ df_S2_scores <- BMDM@meta.data %>%
   ) %>%
   dplyr::group_by(patient, lesion, sample) %>%
   dplyr::summarise(S2 = mean(S2, na.rm = TRUE), .groups = "drop")
+
 n_pairs_s2 <- dplyr::n_distinct(df_S2_scores$patient)
+
+df_wide_s2 <- df_S2_scores %>%
+  tidyr::pivot_wider(id_cols = patient, names_from = lesion, values_from = S2)
+
+p_t_s2 <- t.test(df_wide_s2$`1`, df_wide_s2$`2`, paired = TRUE)$p.value
+p_wilcox_s2 <- suppressWarnings(wilcox.test(df_wide_s2$`1`, df_wide_s2$`2`, paired = TRUE)$p.value)
+
 if (!requireNamespace("lmerTest", quietly = TRUE)) {
   stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
 }
@@ -263,9 +286,11 @@ meta_s2$patient <- sub("_.*", "", as.character(meta_s2$sample))
 meta_s2$lesion <- factor(sub(".*_", "", as.character(meta_s2$sample)), levels = c("1", "2"))
 lmm_s2 <- lmerTest::lmer(S2 ~ lesion + (1|patient), data = meta_s2)
 p_lmm_s2 <- summary(lmm_s2)$coefficients["lesion2", "Pr(>|t|)"]
-caption_S2 <- sprintf("n=%d pairs; LMM %s", n_pairs_s2, fmt_p(p_lmm_s2))
 
-pdf("figures/Fig2E_review.pdf", height = 4, width = 5)
+caption_S2 <- sprintf("n=%d pairs\nLMM %s\nPaired t %s | Wilcoxon %s", 
+                      n_pairs_s2, fmt_p(p_lmm_s2), fmt_p(p_t_s2), fmt_p(p_wilcox_s2))
+
+pdf("figures/Fig2E_review.pdf", height = 4.5, width = 5)
 ggboxplot(df_S2, x = "sample", y = "S2", color = "sample", fill = "sample", palette = SampleColor) +
   ylab("S2 score") +
   labs(subtitle = caption_S2) +
@@ -471,7 +496,15 @@ df_MP1_scores <- BMDM@meta.data %>%
   ) %>%
   dplyr::group_by(patient, lesion, sample) %>%
   dplyr::summarise(MP1 = mean(MP1, na.rm = TRUE), .groups = "drop")
+
 n_pairs_mp1 <- dplyr::n_distinct(df_MP1_scores$patient)
+
+df_wide_mp1 <- df_MP1_scores %>%
+  tidyr::pivot_wider(id_cols = patient, names_from = lesion, values_from = MP1)
+
+p_t_mp1 <- t.test(df_wide_mp1$`1`, df_wide_mp1$`2`, paired = TRUE)$p.value
+p_wilcox_mp1 <- suppressWarnings(wilcox.test(df_wide_mp1$`1`, df_wide_mp1$`2`, paired = TRUE)$p.value)
+
 if (!requireNamespace("lmerTest", quietly = TRUE)) {
   stop("Package 'lmerTest' is required for LMM-based p-value calculation.")
 }
@@ -480,9 +513,11 @@ meta_mp1$patient <- sub("_.*", "", as.character(meta_mp1$sample))
 meta_mp1$lesion <- factor(sub(".*_", "", as.character(meta_mp1$sample)), levels = c("1", "2"))
 lmm_mp1 <- lmerTest::lmer(MP1 ~ lesion + (1|patient), data = meta_mp1)
 p_lmm_mp1 <- summary(lmm_mp1)$coefficients["lesion2", "Pr(>|t|)"]
-caption_MP1 <- sprintf("n=%d pairs; LMM %s", n_pairs_mp1, fmt_p(p_lmm_mp1))
 
-pdf("figures/Fig2H_review.pdf", height = 4, width = 5)
+caption_MP1 <- sprintf("n=%d pairs\nLMM %s\nPaired t %s | Wilcoxon %s", 
+                       n_pairs_mp1, fmt_p(p_lmm_mp1), fmt_p(p_t_mp1), fmt_p(p_wilcox_mp1))
+
+pdf("figures/Fig2H_review.pdf", height = 4.5, width = 5)
 ggboxplot(df_MP1, x = "sample", y = "MP1", color = "sample", fill = "sample", palette = SampleColor) +
   ylab("MP1 score") +
   labs(subtitle = caption_MP1) +
